@@ -1,0 +1,55 @@
+# File: configs/config_gnn.yaml (Modified Version)
+
+exp_name: 'trained_models/gnn_k3'
+
+# CNN
+channels: [16, 16, 16]
+strides: [1,1,1,1,1]
+
+# Encoder MLP
+encoder_layers: 1
+last_convs: [400]
+encoder_dims: [64]
+
+# GNN
+graph_filters: [3]
+node_dims: [128]
+
+# Policy MLP
+action_layers: 1
+
+# Training
+epochs: 50
+tests_episodes: 100
+net_type: 'gnn'
+msg_type: 'gcn'
+
+# Simulation / Data Generation Parameters (MUST MATCH GENERATED DATA)
+board_size: [28, 28]    # MODIFIED: Match data generation map_shape [28, 28]
+map_shape: [28, 28]     # MODIFIED: Match data generation map_shape [28, 28] (Verify if used differently)
+num_agents: 5           # OK: Matches data generation nb_agents 5
+obstacles: 8            # MODIFIED: Match data generation nb_obstacles 8
+max_steps: 60           # MODIFIED: Increased >= max_time_dl (was 32)
+max_time: 60            # MODIFIED: Increased >= max_time_dl (was 32)
+sensing_range: 4        # MODIFIED: Match data generation sensor_range 4 (was 6)
+
+# Data Loading
+min_time: 1             # Global min time (can be overridden below)
+num_workers: 3
+batch_size: 128
+
+train:
+    root_dir: 'dataset/5_8_28/train' # Make sure this path is correct
+    mode: 'train'
+    min_time: 5           # OK: Actual min was 12. Could increase to 10 or 12.
+    max_time_dl: 55       # MODIFIED: Increased to accept longest path (51). Was 25.
+    nb_agents: 5          # OK: Matches num_agents
+
+valid:                    # ADDED: Configuration for validation set
+    root_dir: 'dataset/5_8_28/val'   # Path to validation data
+    mode: 'val'
+    min_time: 5           # OK: Actual min was 14. Could increase.
+    max_time_dl: 55       # MODIFIED: Increased to accept longest path (49). Was 25 (implicitly).
+    nb_agents: 5          # OK: Matches num_agents
+
+# Add other sections like 'test' if needed
