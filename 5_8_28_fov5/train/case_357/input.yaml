@@ -1,0 +1,57 @@
+agents:
+- goal:
+  - 26
+  - 15
+  name: agent0
+  start:
+  - 18
+  - 1
+- goal:
+  - 25
+  - 2
+  name: agent1
+  start:
+  - 26
+  - 22
+- goal:
+  - 12
+  - 3
+  name: agent2
+  start:
+  - 12
+  - 11
+- goal:
+  - 19
+  - 21
+  name: agent3
+  start:
+  - 7
+  - 14
+- goal:
+  - 15
+  - 5
+  name: agent4
+  start:
+  - 0
+  - 27
+map:
+  dimensions:
+  - 28
+  - 28
+  obstacles:
+  - - 3
+    - 3
+  - - 20
+    - 19
+  - - 26
+    - 26
+  - - 25
+    - 26
+  - - 3
+    - 10
+  - - 12
+    - 12
+  - - 0
+    - 26
+  - - 12
+    - 16
