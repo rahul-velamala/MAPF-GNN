@@ -1,0 +1,48 @@
+# File: trained_models/gnn_msg_k3/config.yaml (Revised)
+
+# --- Model Architecture ---
+channels: [16, 16, 16]
+strides: [1, 1, 1, 1, 1]
+encoder_layers: 1
+last_convs: [400]       # VERIFY
+encoder_dims: [64]
+graph_filters: [3]      # K=3
+node_dims: [128]
+action_layers: 1
+net_type: gnn
+msg_type: 'message'     # Specify message passing type
+
+# --- Training Hyperparameters (Original Run) ---
+epochs: 50
+batch_size: 128
+# learning_rate: 3e-4   # Add if known
+# weight_decay: 1e-4    # Add if known
+
+# --- Evaluation Parameters (Original Run) ---
+tests_episodes: 25
+
+# --- Environment & Data Parameters (Original Run) ---
+# These should reflect the data used for *this specific* training run
+num_agents: 5
+board_size: [28, 28]
+obstacles: 8
+pad: 3                  # Added (inferred from map_shape)
+map_shape: [5, 5]       # FOV dimensions [rows, cols]
+sensing_range: 4        # Corrected (was 6)
+max_time: 32            # Max steps for env truncation
+max_steps: 32           # Max steps for evaluation
+
+# --- Data Loading (Original Run) ---
+min_time: 1             # Global fallback min_time
+num_workers: 3
+
+train:
+  root_dir: dataset/5_8_28/train # Corrected path separator
+  mode: train
+  min_time: 5
+  max_time_dl: 25       # Max trajectory length loaded during training
+  nb_agents: 5
+
+# valid: # Add if validation set was used during this training run
+#   root_dir: dataset/5_8_28/val
+#   

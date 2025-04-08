@@ -1,0 +1,54 @@
+# File: trained_models/gnn_k3/config.yaml (Revised)
+
+# --- Model Architecture ---
+channels: [16, 16, 16]
+strides: [1, 1, 1, 1, 1]
+encoder_layers: 1
+last_convs: [400]       # VERIFY
+encoder_dims: [64]
+graph_filters: [3]      # K=3
+node_dims: [128]
+action_layers: 1
+net_type: gnn
+msg_type: gcn
+
+# --- Training Hyperparameters (Original Run) ---
+epochs: 50
+batch_size: 128
+# learning_rate: 3e-4   # Add if known
+# weight_decay: 1e-4    # Add if known
+
+# --- Evaluation Parameters (Original Run) ---
+tests_episodes: 100
+
+# --- Environment & Data Parameters (Original Run) ---
+num_agents: 5
+board_size: [28, 28]
+obstacles: 8
+pad: 3                  # Added (inferred from corrected map_shape)
+map_shape: [5, 5]       # Corrected FOV dimensions (was [28, 28])
+sensing_range: 4
+max_time: 60            # Max steps for env truncation
+max_steps: 60           # Max steps for evaluation
+
+# --- Data Loading (Original Run) ---
+min_time: 1             # Global fallback min_time
+num_workers: 3
+
+train:
+  root_dir: dataset/5_8_28/train
+  mode: train
+  min_time: 5
+  max_time_dl: 55       # Max trajectory length loaded during training
+  nb_agents: 5
+
+valid:
+  root_dir: dataset/5_8_28/val
+  mode: valid           # Corrected mode value
+  min_time: 5
+  max_time_dl: 55       # Max trajectory length loaded during validation
+  nb_agents: 5
+
+# --- Other Info ---
+exp_name: trained_models/gnn_k3
+device: cuda:0          # Device used for training

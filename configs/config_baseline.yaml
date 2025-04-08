@@ -1,0 +1,58 @@
+# File: configs/config_baseline.yaml (Revised)
+
+# Experiment Name / Output Directory (within results/)
+exp_name: 'baseline_5_6_16_p3' # Descriptive name: model_agents_obstacles_size_pad
+
+# --- Model Architecture (Baseline Specific) ---
+# CNN (Input: FOV)
+channels: [32, 16, 16]  # Output channels of CNN layers. Input is 3 channels (obs/agents, goal, self) <- COMMENT UPDATED
+strides: [1, 1, 1]        # Length MUST match number of CNN layers (implied by channels) <- CHANGED
+
+# Encoder MLP (after flatten)
+encoder_layers: 1
+last_convs: [400]      # Output features after flatten (VERIFIED for 5x5 FOV, 16 out channels)
+encoder_dims: [64]     # Output dim of encoder MLP
+
+# Policy MLP (after encoder)
+action_layers: 1       # Number of hidden layers in action MLP (1 means Linear(encoder_dim -> 5))
+
+# --- Training Hyperparameters ---
+epochs: 60
+learning_rate: 3e-4    # Example value
+weight_decay: 1e-4     # Example value
+batch_size: 128
+num_workers: 3         # Set to 0 if debugging DataLoader issues
+eval_frequency: 5      # Evaluate every 5 epochs
+net_type: 'baseline'   # Model type
+
+# --- Evaluation ---
+tests_episodes: 25     # Number of episodes for evaluation phase
+
+# --- Environment & Simulation Parameters ---
+# These MUST match the data generation process for the loaded dataset
+num_agents: 5
+board_size: [16, 16]   # Grid dimensions [rows, cols]
+obstacles: 6           # Number of obstacles
+pad: 3                 # Padding used for FOV calculation (gives 5x5 FOV)
+map_shape: [5, 5]      # FOV dimensions [rows, cols] - MUST match (2*pad - 1)
+max_time: 32           # Max steps per episode (for env truncation)
+max_steps: 32          # Max steps for evaluation episodes in train script
+# sensing_range: N/A   # Not used by baseline model
+
+# --- Data Loading ---
+# Global filters (can be overridden in train/valid)
+min_time: 1            # Min trajectory length to load (global fallback)
+
+train:
+    root_dir: 'dataset/5_6_16/train' # <<<--- IMPORTANT: UPDATE PATH TO YOUR ACTUAL DATASET ---<<<
+    mode: 'train'
+    min_time: 5           # Min trajectory length for training samples
+    max_time_dl: 30       # Max trajectory length for training samples (adjust based on dataset stats)
+    nb_agents: 5          # Number of agents in the dataset (should match num_agents)
+
+valid:
+    root_dir: 'dataset/5_6_16/val'   # <<<--- IMPORTANT: UPDATE PATH TO YOUR ACTUAL DATASET ---<<<
+    mode: 'valid'           # Use 'valid' as key for CreateDataset lookup
+    min_time: 5           # Min trajectory length for validation samples
+    max_time_dl: 30       # Max trajectory length for validation samples (adjust based on dataset stats)
+    nb_agents: 5          # Number of agents in the dataset

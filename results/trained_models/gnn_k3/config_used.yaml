@@ -1,0 +1,51 @@
+action_layers: 1
+batch_size: 128
+board_size:
+- 28
+- 28
+channels:
+- 16
+- 16
+- 16
+device: cuda:0
+encoder_dims:
+- 64
+encoder_layers: 1
+epochs: 50
+exp_name: trained_models/gnn_k3
+graph_filters:
+- 3
+last_convs:
+- 13456
+map_shape:
+- 29
+- 29
+max_steps: 60
+max_time: 60
+min_time: 1
+msg_type: gcn
+net_type: gnn
+node_dims:
+- 128
+num_agents: 5
+num_workers: 3
+obstacles: 8
+pad: 15
+sensing_range: 4
+strides:
+- 1
+- 1
+- 1
+tests_episodes: 100
+train:
+  max_time_dl: 55
+  min_time: 5
+  mode: train
+  nb_agents: 5
+  root_dir: dataset/5_8_28/train
+valid:
+  max_time_dl: 55
+  min_time: 5
+  mode: val
+  nb_agents: 5
+  root_dir: dataset/5_8_28/val
