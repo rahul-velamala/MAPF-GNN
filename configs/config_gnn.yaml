@@ -1,70 +1,90 @@
-# File: configs/config_gnn.yaml (Revised)
+# File: configs/config_gnn.yaml (Revised with Comments)
 
 # Experiment Name / Output Directory (within results/)
-exp_name: 'gnn_5_8_28_p3_k3' # Descriptive name: model_agents_obstacles_size_pad_filtertaps
+# !!! IMPORTANT: CHANGE 'exp_name' for each new training run to avoid overwriting results !!!
+exp_name: 'gnn_5_8_28_p3_k3_largeData_50ep' # Descriptive name: model_agents_obstacles_size_pad_filtertaps_extra_info
 
 # --- Model Architecture (GNN Specific) ---
 # CNN (Input: FOV)
-channels: [16, 16, 16]   # Output channels of CNN layers. Input is 3 channels (obs/agents, goal, self) <- COMMENT UPDATED
-strides: [1, 1, 1]        # Length MUST match number of CNN layers (implied by channels) <- CHANGED
+channels: [16, 16, 16]   # Output channels of CNN layers. Input should be 3 channels (obs/agents, goal, self).
+strides: [1, 1, 1]        # Length MUST match number of CNN layers implied by channels (len(channels)-1). Stride=1 with Padding=1, Kernel=3 preserves H, W.
+# kernels: [3, 3, 3]      # Optional: Explicitly define kernel sizes (default assumed 3)
+# paddings: [1, 1, 1]     # Optional: Explicitly define padding (default assumed 1)
 
 # Encoder MLP (after flatten)
-encoder_layers: 1
-last_convs: [400]       # Output features after flatten (VERIFIED for 5x5 FOV, 16 out channels)
-encoder_dims: [64]      # Output dim of encoder MLP (input to GNN)
+encoder_layers: 1         # Number of layers in the MLP *after* the CNN. 1 means Input -> encoder_dims[0].
+# last_convs: [400]       # Optional: Expected flattened dim after CNN. If commented out/removed, framework calculates it.
+                          # Value 400 is correct for channels[-1]=16 and map_shape=[5, 5] if H/W are preserved by CNN.
+encoder_dims: [64]        # Output dimension(s) of encoder MLP. If encoder_layers=1, this is the final output dim.
 
 # GNN
-graph_filters: [3]      # Number of filter taps (K) for each GCN layer
-node_dims: [128]        # Output dimension of each GCN layer
-msg_type: 'gcn'         # Type of GNN layer ('gcn' or 'message')
+graph_filters: [3]        # Number of filter taps (K) for each GNN layer. Length = number of GNN layers.
+node_dims: [128]          # Output dimension of each GNN layer. Length must match len(graph_filters).
+msg_type: 'gcn'           # Type of GNN layer: 'gcn' (Kipf&Welling) or 'message' (Basic MPNN).
 
 # Policy MLP (after GNN)
-action_layers: 1        # Number of hidden layers in action MLP
+action_layers: 1          # Number of layers in the action MLP. 1 means GNN_output_dim -> num_actions.
 
 # --- Training Hyperparameters ---
-epochs: 15
-learning_rate: 3e-4     # Example value
-weight_decay: 1e-4      # Example value
-batch_size: 128
-num_workers: 3          # Set to 0 if debugging DataLoader issues
-eval_frequency: 5       # Evaluate every 5 epochs
-net_type: 'gnn'         # Model type
+epochs: 50              # Number of training epochs. Might need more for full convergence.
+learning_rate: 3e-4       # Adam learning rate.
+weight_decay: 1e-4        # Adam weight decay (L2 regularization).
+batch_size: 128           # Number of samples (timesteps) per batch. Adjust based on GPU memory.
+num_workers: 0            # DataLoader workers. Start with 0 for debugging. Increase (e.g., 2, 4) if data loading is a bottleneck and no multiprocessing errors occur.
+eval_frequency: 5         # Evaluate model performance on validation set every N epochs.
+net_type: 'gnn'           # Must match the framework file being used ('gnn' or 'baseline').
 
 # --- Online Expert (DAgger) ---
-online_expert:          # Optional section for OE parameters
-  frequency_epochs: 4   # Run OE every 4 epochs
-  num_cases_to_run: 500 # Number of cases to check for deadlocks
-  cbs_timeout_seconds: 10 # Timeout for expert CBS call
+# To disable DAgger, run train.py with the --oe_disable flag.
+online_expert:
+  frequency_epochs: 4     # Run OE data aggregation every N epochs (e.g., after epoch 4, 8, 12...).
+  num_cases_to_run: 500   # How many cases from the original training set to check for deadlocks during each OE run.
+  cbs_timeout_seconds: 10 # Max time (seconds) allowed for the CBS expert to find a solution from a deadlock state.
 
 # --- Evaluation ---
-tests_episodes: 100      # Number of episodes for evaluation phase
+tests_episodes: 100       # Number of random episodes to run during the evaluation phase (controlled by eval_frequency).
 
 # --- Environment & Simulation Parameters ---
-# These MUST match the data generation process for the loaded dataset
-num_agents: 5
-board_size: [28, 28]    # Grid dimensions [rows, cols]
-obstacles: 8            # Number of obstacles
-pad: 3                  # Padding used for FOV calculation (gives 5x5 FOV)
-map_shape: [5, 5]       # FOV dimensions [rows, cols] - MUST match (2*pad - 1)
-sensing_range: 4        # Agent communication/adjacency range
-max_time: 120            # Max steps per episode (for env truncation)
-max_steps: 120           # Max steps for evaluation episodes in train script
-max_steps_train_inference: 180 # Timeout for OE inference runs (e.g., max_steps * 3) <- ADDED
+# !!! IMPORTANT: These MUST match the parameters used to generate the dataset being loaded !!!
+num_agents: 5             # Number of agents. MUST match dataset.
+board_size: [28, 28]      # Grid dimensions [rows, cols]. MUST match dataset.
+obstacles: 8              # Number of obstacles. MUST match dataset.
+pad: 3                    # Padding used for FOV calculation. Determines FOV size. MUST match dataset/model assumption.
+map_shape: [5, 5]         # FOV dimensions [Height, Width]. MUST equal [2*pad-1, 2*pad-1].
+sensing_range: 4          # Agent communication/adjacency range (used for GSO in GraphEnv). MUST match dataset generation assumption if relevant.
+max_time: 120             # Max steps per episode in environment simulation (used for truncation in GraphEnv). Should be >= max trajectory length in data.
+max_steps: 120            # Max steps limit for *evaluation* episodes run during training.
+max_steps_train_inference: 180 # Timeout limit (steps) for simulation runs during Online Expert to detect deadlocks. Should be > max_time.
 
 # --- Data Loading ---
-# Global filters (can be overridden in train/valid)
-min_time: 1             # Min trajectory length to load (global fallback)
+# Global filters (can be overridden in train/valid sections) - Applied to trajectory length T.
+# min_time: 1             # Optional global minimum trajectory length (T) to load. Usually set per-split.
 
 train:
-    root_dir: 'dataset/5_8_28_fov5/train' # Path to training data
-    mode: 'train'
-    min_time: 5           # Min trajectory length for training samples
-    max_time_dl: 55       # Max trajectory length for training samples (adjust based on dataset stats)
-    nb_agents: 5          # Number of agents in the dataset (should match num_agents)
+    # !!! IMPORTANT: Verify 'root_dir' points to the correct training data directory !!!
+    root_dir: 'dataset/5_8_28_fov5/train' # Path relative to project root where 'case_XXX' folders are.
+    mode: 'train'           # Internal key, keep as 'train'.
+    # --- Filters applied by DataLoader ---
+    min_time: 5             # Min trajectory length (T) for training samples. Adjust based on dataset.
+    max_time_dl: 80         # Max trajectory length (T) for training samples. Adjust based on dataset stats. Should be <= max_time.
+    # --- Consistency Check ---
+    nb_agents: 5            # Number of agents in the dataset files. MUST match global 'num_agents'.
 
 valid:
-    root_dir: 'dataset/5_8_28_fov5/val'   # Path to validation data
-    mode: 'valid'           # Use 'valid' as key for CreateDataset lookup
-    min_time: 5           # Min trajectory length for validation samples
-    max_time_dl: 55       # Max trajectory length for validation samples (adjust based on dataset stats)
-    nb_agents: 5          # Number of agents in the dataset
+    # !!! IMPORTANT: Verify 'root_dir' points to the correct validation data directory !!!
+    root_dir: 'dataset/5_8_28_fov5/val '   # Path relative to project root.
+    mode: 'valid'           # Internal key, keep as 'valid'.
+    # --- Filters applied by DataLoader ---
+    min_time: 5             # Min trajectory length (T) for validation samples.
+    max_time_dl: 80         # Max trajectory length (T) for validation samples. Should be <= max_time.
+    # --- Consistency Check ---
+    nb_agents: 5            # Number of agents in the dataset files. MUST match global 'num_agents'.
+
+# --- Optional: Evaluation-specific Environment parameters (used in train.py eval phase) ---
+# If commented out, the main parameters above are used for evaluation.
+# eval_board_size: [16, 16]
+# eval_obstacles: 6
+# eval_num_agents: 5 # Should typically match num_agents unless evaluating transfer
+# eval_sensing_range: 4
+# eval_pad: 3
+# eval_max_steps: 60 # If different step limit needed for eval vs training env max_time

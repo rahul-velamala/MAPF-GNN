@@ -1,147 +1,272 @@
-"""
+# File: cbs/cbs.py
+# (Complete Code - Hashing fixes kept, Immutability enforcement removed)
 
-Python implementation of Conflict-based search
-
-
-
-"""
 import sys
-
-sys.path.insert(0, "../")
+# sys.path.insert(0, "../") # Avoid modifying sys.path if possible
 import argparse
 import yaml
 from math import fabs
 from itertools import combinations
 from copy import deepcopy
+import heapq # Import heapq for priority queue
 
-from cbs.a_star import AStar
+# Use relative import if running cbs code directly within the package
+try:
+    from .a_star import AStar
+except ImportError:
+    # Fallback for direct execution or different structure
+    from a_star import AStar
 
 
 class Location(object):
+    """ Represents a 2D location (x, y) on the grid. """
+    # __slots__ = ['x', 'y'] # REMOVED immutability enforcement
+
     def __init__(self, x=-1, y=-1):
-        self.x = x
-        self.y = y
+        try:
+             # Ensure coordinates are integers upon initialization
+             self.x = int(x)
+             self.y = int(y)
+        except (ValueError, TypeError):
+             print(f"Warning: Non-integer coordinates ({x}, {y}) passed to Location. Defaulting to -1.")
+             self.x = -1
+             self.y = -1
 
     def __eq__(self, other):
-        return self.x == other.x and self.y == other.y
+        """ Checks if two Location objects represent the same coordinates. """
+        if isinstance(other, Location):
+            return self.x == other.x and self.y == other.y
+        return NotImplemented # Indicate comparison is not supported
+
+    def __hash__(self):
+        """ Computes the hash based on the coordinates. """
+        # Hash a tuple of the coordinates
+        return hash((self.x, self.y))
 
     def __str__(self):
+        """ String representation of the location. """
         return str((self.x, self.y))
+
+    def __repr__(self):
+        """ Detailed representation for debugging. """
+        return f"Location(x={self.x}, y={self.y})"
+
+    # REMOVED custom __setattr__
 
 
 class State(object):
+    """ Represents a state (time, location). """
+    # __slots__ = ['time', 'location'] # REMOVED immutability enforcement
+
     def __init__(self, time, location):
-        self.time = time
-        self.location = location
+        """
+        Initializes a State object.
+        Args:
+            time (int): The time step.
+            location (Location or convertible): The location object or [x,y] list/tuple.
+        """
+        try:
+            self.time = int(time) # Ensure time is an integer
+        except (ValueError, TypeError):
+            raise TypeError(f"State time must be an integer, got {time}")
+
+        if not isinstance(location, Location):
+             # Attempt conversion if a list/tuple is provided
+             try:
+                 loc_obj = Location(location[0], location[1]) # Assume input might be [x,y]
+                 # print(f"Warning: State received non-Location object for location ({location}), converted to {loc_obj}.") # Optional warning
+                 self.location = loc_obj
+             except (TypeError, IndexError, ValueError):
+                 raise TypeError(f"State location must be a Location object or convertible like [x,y], got {location}")
+        else:
+            self.location = location
+
 
     def __eq__(self, other):
-        return self.time == other.time and self.location == other.location
+        """ Checks if two State objects are identical (same time and location). """
+        if isinstance(other, State):
+            # Relies on Location.__eq__ for location comparison
+            return self.time == other.time and self.location == other.location
+        return NotImplemented
 
     def __hash__(self):
-        return hash(str(self.time) + str(self.location.x) + str(self.location.y))
+        """ Computes the hash based on time and location. """
+        # Hash a tuple of the time and the hashable location object.
+        return hash((self.time, self.location))
 
     def is_equal_except_time(self, state):
-        return self.location == state.location
+        """ Checks if the location of this state matches another state's location. """
+        if isinstance(state, State):
+            return self.location == state.location
+        return False
 
     def __str__(self):
-        return str((self.time, self.location.x, self.location.y))
+        """ String representation of the state. """
+        return str((self.time, str(self.location)))
+
+    def __repr__(self):
+        """ Detailed representation for debugging. """
+        return f"State(time={self.time}, location={repr(self.location)})"
+
+    # REMOVED custom __setattr__
 
 
 class Conflict(object):
+    """ Represents a conflict between two agents. """
     VERTEX = 1
     EDGE = 2
 
     def __init__(self):
         self.time = -1
-        self.type = -1
-
-        self.agent_1 = ""
-        self.agent_2 = ""
-
-        self.location_1 = Location()
-        self.location_2 = Location()
+        self.type = -1 # VERTEX or EDGE
+        self.agent_1 = "" # Name of the first agent
+        self.agent_2 = "" # Name of the second agent
+        self.location_1 = Location() # Location involved (vertex) or first location (edge)
+        self.location_2 = Location() # Second location involved (edge conflict only)
 
     def __str__(self):
+        """ String representation of the conflict. """
+        loc_str = str(self.location_1)
+        if self.type == Conflict.EDGE:
+            loc_str += f" <-> {str(self.location_2)}" # Indicate swap for edge conflict
         return (
-            "("
-            + str(self.time)
-            + ", "
-            + self.agent_1
-            + ", "
-            + self.agent_2
-            + ", "
-            + str(self.location_1)
-            + ", "
-            + str(self.location_2)
-            + ")"
+            f"(Time: {self.time}, Type: {'Vertex' if self.type == Conflict.VERTEX else 'Edge'}, "
+            f"Agents: ({self.agent_1}, {self.agent_2}), Loc: {loc_str})"
         )
 
 
 class VertexConstraint(object):
+    """ Vertex constraint (location, time). """
+    # __slots__ = ['time', 'location'] # REMOVED immutability enforcement
+
     def __init__(self, time, location):
-        self.time = time
+        if not isinstance(location, Location):
+             raise TypeError("VertexConstraint location must be a Location object.")
+        try:
+            self.time = int(time)
+        except (ValueError, TypeError):
+            raise TypeError(f"VertexConstraint time must be an integer, got {time}")
         self.location = location
 
+
     def __eq__(self, other):
-        return self.time == other.time and self.location == other.location
+        """ Checks equality based on time and location. """
+        if isinstance(other, VertexConstraint):
+            return self.time == other.time and self.location == other.location
+        return NotImplemented
 
     def __hash__(self):
-        return hash(str(self.time) + str(self.location))
+        """ Computes hash based on time and location. """
+        return hash((self.time, self.location))
 
     def __str__(self):
-        return "(" + str(self.time) + ", " + str(self.location) + ")"
+        """ String representation of the vertex constraint. """
+        return f"(VC: t={self.time}, loc={self.location})"
+
+    # REMOVED custom __setattr__
 
 
 class EdgeConstraint(object):
+    """ Edge constraint (loc1 -> loc2 at time t). """
+    # __slots__ = ['time', 'location_1', 'location_2'] # REMOVED immutability enforcement
+
     def __init__(self, time, location_1, location_2):
-        self.time = time
+        """
+        Args:
+            time (int): The time step *when leaving* location_1.
+            location_1 (Location): The starting location of the edge.
+            location_2 (Location): The ending location of the edge.
+        """
+        if not isinstance(location_1, Location):
+             raise TypeError("EdgeConstraint location_1 must be a Location object.")
+        if not isinstance(location_2, Location):
+             raise TypeError("EdgeConstraint location_2 must be a Location object.")
+        try:
+            self.time = int(time) # Time of *leaving* location_1
+        except (ValueError, TypeError):
+            raise TypeError(f"EdgeConstraint time must be an integer, got {time}")
         self.location_1 = location_1
         self.location_2 = location_2
 
     def __eq__(self, other):
-        return (
-            self.time == other.time
-            and self.location_1 == other.location_1
-            and self.location_2 == other.location_2
-        )
+        """ Checks equality based on time and the directed edge. """
+        if isinstance(other, EdgeConstraint):
+            # Order matters
+            return (self.time == other.time and
+                    self.location_1 == other.location_1 and
+                    self.location_2 == other.location_2)
+        return NotImplemented
 
     def __hash__(self):
-        return hash(str(self.time) + str(self.location_1) + str(self.location_2))
+        """ Computes hash based on time and the directed edge. """
+        # Hash includes order
+        return hash((self.time, self.location_1, self.location_2))
 
     def __str__(self):
-        return (
-            "("
-            + str(self.time)
-            + ", "
-            + str(self.location_1)
-            + ", "
-            + str(self.location_2)
-            + ")"
-        )
+        """ String representation of the edge constraint. """
+        return f"(EC: t={self.time}, {self.location_1} -> {self.location_2})"
+
+    # REMOVED custom __setattr__
 
 
 class Constraints(object):
+    """ Holds a set of vertex and edge constraints for an agent or CBS node. """
     def __init__(self):
-        self.vertex_constraints = set()
-        self.edge_constraints = set()
+        self.vertex_constraints = set() # Set of VertexConstraint objects
+        self.edge_constraints = set()   # Set of EdgeConstraint objects
 
     def add_constraint(self, other):
-        self.vertex_constraints |= other.vertex_constraints
-        self.edge_constraints |= other.edge_constraints
+        """ Adds constraints from another Constraints object. """
+        if not isinstance(other, Constraints): return
+        # Use set union to add constraints
+        self.vertex_constraints.update(other.vertex_constraints)
+        self.edge_constraints.update(other.edge_constraints)
 
     def __str__(self):
-        return (
-            "VC: "
-            + str([str(vc) for vc in self.vertex_constraints])
-            + "EC: "
-            + str([str(ec) for ec in self.edge_constraints])
-        )
+        """ String representation of all constraints, sorted for consistency. """
+        # Sort constraints before joining for deterministic string representation
+        vc_list = sorted(list(self.vertex_constraints), key=lambda x: (x.time, x.location.x, x.location.y))
+        ec_list = sorted(list(self.edge_constraints), key=lambda x: (x.time, x.location_1.x, x.location_1.y, x.location_2.x, x.location_2.y))
+        vc_str = ", ".join(map(str, vc_list))
+        ec_str = ", ".join(map(str, ec_list))
+        return f"VC: {{{vc_str}}}; EC: {{{ec_str}}}"
+
+    def __eq__(self, other):
+        """ Checks if two Constraints objects hold the exact same constraints. """
+        if isinstance(other, Constraints):
+            return self.vertex_constraints == other.vertex_constraints and \
+                   self.edge_constraints == other.edge_constraints
+        return NotImplemented
+
+    def __hash__(self):
+        """ Computes hash based on frozensets of the constraint sets. """
+        return hash((frozenset(self.vertex_constraints), frozenset(self.edge_constraints)))
 
 
 class Environment(object):
+    """ Represents the grid environment configuration for the CBS solver. """
     def __init__(self, dimension, agents, obstacles):
+        """
+        Initializes the CBS environment.
+        Args:
+            dimension (list/tuple): Map dimensions [width, height].
+            agents (list): List of agent dictionaries [{'name': str, 'start': [x,y], 'goal': [x,y]}].
+            obstacles (list): List of obstacle coordinates [[x,y], ...].
+        """
+        if not isinstance(dimension, (list, tuple)) or len(dimension) != 2:
+            raise ValueError("Dimension must be [width, height]")
         self.dimension = dimension
-        self.obstacles = obstacles
+        self.width, self.height = dimension
+
+        self.obstacles = set()
+        if obstacles:
+             for obs in obstacles:
+                  if isinstance(obs, (list, tuple)) and len(obs) == 2:
+                       try: self.obstacles.add(Location(obs[0], obs[1]))
+                       except (ValueError, TypeError): print(f"Warning: Invalid obstacle format skipped: {obs}")
+                  else:
+                       print(f"Warning: Invalid obstacle format skipped: {obs}")
+        print(f"CBS Environment: Dimensions={self.width}x{self.height}, Obstacles={len(self.obstacles)}")
 
         self.agents = agents
         self.agent_dict = {}
@@ -152,272 +277,380 @@ class Environment(object):
         self.constraint_dict = {}
 
         self.a_star = AStar(self)
+        print(f"CBS Environment: Agents processed={len(self.agent_dict)}")
 
-    def get_neighbors(self, state):
-        neighbors = []
-
-        # Wait action
-        n = State(state.time + 1, state.location)
-        if self.state_valid(n):
-            neighbors.append(n)
-        # Up action
-        n = State(state.time + 1, Location(state.location.x, state.location.y + 1))
-        if self.state_valid(n) and self.transition_valid(state, n):
-            neighbors.append(n)
-        # Down action
-        n = State(state.time + 1, Location(state.location.x, state.location.y - 1))
-        if self.state_valid(n) and self.transition_valid(state, n):
-            neighbors.append(n)
-        # Left action
-        n = State(state.time + 1, Location(state.location.x - 1, state.location.y))
-        if self.state_valid(n) and self.transition_valid(state, n):
-            neighbors.append(n)
-        # Right action
-        n = State(state.time + 1, Location(state.location.x + 1, state.location.y))
-        if self.state_valid(n) and self.transition_valid(state, n):
-            neighbors.append(n)
-        return neighbors
-
-    def get_first_conflict(self, solution):
-        max_t = max([len(plan) for plan in solution.values()])
-        result = Conflict()
-        for t in range(max_t):
-            for agent_1, agent_2 in combinations(solution.keys(), 2):
-                state_1 = self.get_state(agent_1, solution, t)
-                state_2 = self.get_state(agent_2, solution, t)
-                if state_1.is_equal_except_time(state_2):
-                    result.time = t
-                    result.type = Conflict.VERTEX
-                    result.location_1 = state_1.location
-                    result.agent_1 = agent_1
-                    result.agent_2 = agent_2
-                    return result
-
-            for agent_1, agent_2 in combinations(solution.keys(), 2):
-                state_1a = self.get_state(agent_1, solution, t)
-                state_1b = self.get_state(agent_1, solution, t + 1)
-
-                state_2a = self.get_state(agent_2, solution, t)
-                state_2b = self.get_state(agent_2, solution, t + 1)
-
-                if state_1a.is_equal_except_time(
-                    state_2b
-                ) and state_1b.is_equal_except_time(state_2a):
-                    result.time = t
-                    result.type = Conflict.EDGE
-                    result.agent_1 = agent_1
-                    result.agent_2 = agent_2
-                    result.location_1 = state_1a.location
-                    result.location_2 = state_1b.location
-                    return result
-        return False
-
-    def create_constraints_from_conflict(self, conflict):
-        constraint_dict = {}
-        if conflict.type == Conflict.VERTEX:
-            v_constraint = VertexConstraint(conflict.time, conflict.location_1)
-            constraint = Constraints()
-            constraint.vertex_constraints |= {v_constraint}
-            constraint_dict[conflict.agent_1] = constraint
-            constraint_dict[conflict.agent_2] = constraint
-
-        elif conflict.type == Conflict.EDGE:
-            constraint1 = Constraints()
-            constraint2 = Constraints()
-
-            e_constraint1 = EdgeConstraint(
-                conflict.time, conflict.location_1, conflict.location_2
-            )
-            e_constraint2 = EdgeConstraint(
-                conflict.time, conflict.location_2, conflict.location_1
-            )
-
-            constraint1.edge_constraints |= {e_constraint1}
-            constraint2.edge_constraints |= {e_constraint2}
-
-            constraint_dict[conflict.agent_1] = constraint1
-            constraint_dict[conflict.agent_2] = constraint2
-
-        return constraint_dict
-
-    def get_state(self, agent_name, solution, t):
-        if t < len(solution[agent_name]):
-            return solution[agent_name][t]
-        else:
-            return solution[agent_name][-1]
-
-    def state_valid(self, state):
-        return (
-            state.location.x >= 0
-            and state.location.x < self.dimension[0]
-            and state.location.y >= 0
-            and state.location.y < self.dimension[1]
-            and VertexConstraint(state.time, state.location)
-            not in self.constraints.vertex_constraints
-            and (state.location.x, state.location.y) not in self.obstacles
-        )
-
-    def transition_valid(self, state_1, state_2):
-        return (
-            EdgeConstraint(state_1.time, state_1.location, state_2.location)
-            not in self.constraints.edge_constraints
-        )
-
-    def is_solution(self, agent_name):
-        pass
-
-    def admissible_heuristic(self, state, agent_name):
-        goal = self.agent_dict[agent_name]["goal"]
-        return fabs(state.location.x - goal.location.x) + fabs(
-            state.location.y - goal.location.y
-        )
-
-    def is_at_goal(self, state, agent_name):
-        goal_state = self.agent_dict[agent_name]["goal"]
-        return state.is_equal_except_time(goal_state)
 
     def make_agent_dict(self):
-        for agent in self.agents:
-            start_state = State(0, Location(agent["start"][0], agent["start"][1]))
-            goal_state = State(0, Location(agent["goal"][0], agent["goal"][1]))
+        """ Parses agent list, creates State objects, validates positions. """
+        self.agent_dict = {}
+        if not self.agents: return
 
-            self.agent_dict.update(
-                {agent["name"]: {"start": start_state, "goal": goal_state}}
-            )
+        processed_agents = 0
+        for agent in self.agents:
+             if not isinstance(agent, dict) or not all(k in agent for k in ["name", "start", "goal"]):
+                  print(f"Warning: Invalid agent format skipped: {agent}")
+                  continue
+             name = agent["name"]
+             try:
+                  start_loc = Location(agent["start"][0], agent["start"][1])
+                  goal_loc = Location(agent["goal"][0], agent["goal"][1])
+
+                  if not (0 <= start_loc.x < self.width and 0 <= start_loc.y < self.height):
+                      raise ValueError(f"Start {start_loc} out of bounds ({self.width}x{self.height}).")
+                  if start_loc in self.obstacles:
+                       raise ValueError(f"Start {start_loc} is on an obstacle.")
+                  if not (0 <= goal_loc.x < self.width and 0 <= goal_loc.y < self.height):
+                      raise ValueError(f"Goal {goal_loc} out of bounds ({self.width}x{self.height}).")
+                  if goal_loc in self.obstacles:
+                       raise ValueError(f"Goal {goal_loc} is on an obstacle.")
+
+                  start_state = State(0, start_loc)
+                  goal_state_for_check = State(0, goal_loc)
+
+                  self.agent_dict[name] = {"start": start_state, "goal": goal_state_for_check}
+                  processed_agents += 1
+             except (TypeError, IndexError, ValueError) as e:
+                  print(f"Error processing agent '{agent.get('name', 'N/A')}': {e}. Skipping agent.")
+                  if name in self.agent_dict: del self.agent_dict[name]
+
+
+    def get_neighbors(self, state):
+        """ Returns valid neighbor states (including wait) considering constraints. """
+        if not isinstance(state, State): return []
+        neighbors = []
+        for dx, dy in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]:
+            try:
+                 next_loc = Location(state.location.x + dx, state.location.y + dy)
+                 next_state = State(state.time + 1, next_loc)
+            except TypeError: continue
+
+            # self.constraints should hold the current agent's constraints for A*
+            if self.state_valid(next_state) and self.transition_valid(state, next_state):
+                neighbors.append(next_state)
+        return neighbors
+
+    def state_valid(self, state):
+        """ Checks if a state is valid (bounds, obstacles, vertex constraints). """
+        if not isinstance(state, State): return False
+        loc = state.location
+        if not (0 <= loc.x < self.width and 0 <= loc.y < self.height): return False
+        if loc in self.obstacles: return False
+        # Check against self.constraints (set by compute_solution for current A* agent)
+        if VertexConstraint(state.time, loc) in self.constraints.vertex_constraints: return False
+        return True
+
+    def transition_valid(self, state_1, state_2):
+        """ Checks if moving from state_1 to state_2 violates an edge constraint. """
+        if not isinstance(state_1, State) or not isinstance(state_2, State): return False
+        constraint = EdgeConstraint(state_1.time, state_1.location, state_2.location)
+        # Check against self.constraints (set by compute_solution for current A* agent)
+        if constraint in self.constraints.edge_constraints: return False
+        return True
+
+    def admissible_heuristic(self, state, agent_name):
+        """ Manhattan distance heuristic. """
+        # ... (remains the same) ...
+        if not isinstance(state, State): return float('inf')
+        try:
+            goal_loc = self.agent_dict[agent_name]["goal"].location
+            return abs(state.location.x - goal_loc.x) + abs(state.location.y - goal_loc.y)
+        except KeyError:
+            print(f"Warning: Agent '{agent_name}' not found in agent_dict during heuristic calculation.")
+            return float('inf')
+
+    def is_at_goal(self, state, agent_name):
+        """ Checks if a state's location matches the agent's goal location. """
+        # ... (remains the same) ...
+        if not isinstance(state, State): return False
+        try:
+            return state.location == self.agent_dict[agent_name]["goal"].location
+        except KeyError:
+             print(f"Warning: Agent '{agent_name}' not found in agent_dict during goal check.")
+             return False
+
+    def get_first_conflict(self, solution):
+        """ Finds the first vertex or edge conflict in a solution dictionary. """
+        # ... (remains the same) ...
+        if not solution: return None
+        max_t = 0
+        for path in solution.values():
+            if path: max_t = max(max_t, path[-1].time)
+
+        for t in range(max_t + 1):
+            loc_at_t = {}
+            for agent_name, path in solution.items():
+                state_t = self.get_state(agent_name, path, t)
+                if state_t is None: continue
+                loc = state_t.location
+                if loc not in loc_at_t: loc_at_t[loc] = []
+                loc_at_t[loc].append(agent_name)
+
+            for loc, agents_at_loc in loc_at_t.items():
+                if len(agents_at_loc) > 1:
+                    conflict = Conflict()
+                    conflict.time = t
+                    conflict.type = Conflict.VERTEX
+                    conflict.location_1 = loc
+                    conflict.agent_1 = agents_at_loc[0]
+                    conflict.agent_2 = agents_at_loc[1]
+                    return conflict
+
+            if t < max_t:
+                for agent_1, agent_2 in combinations(solution.keys(), 2):
+                    path1 = solution.get(agent_1)
+                    path2 = solution.get(agent_2)
+                    if not path1 or not path2: continue
+
+                    state1_t = self.get_state(agent_1, path1, t)
+                    state1_t_plus_1 = self.get_state(agent_1, path1, t + 1)
+                    state2_t = self.get_state(agent_2, path2, t)
+                    state2_t_plus_1 = self.get_state(agent_2, path2, t + 1)
+
+                    if state1_t and state1_t_plus_1 and state2_t and state2_t_plus_1 and \
+                       state1_t.location == state2_t_plus_1.location and \
+                       state1_t_plus_1.location == state2_t.location:
+                        conflict = Conflict()
+                        conflict.time = t + 1
+                        conflict.type = Conflict.EDGE
+                        conflict.agent_1 = agent_1
+                        conflict.agent_2 = agent_2
+                        conflict.location_1 = state1_t.location
+                        conflict.location_2 = state1_t_plus_1.location
+                        return conflict
+        return None
+
+
+    def create_constraints_from_conflict(self, conflict):
+        """ Creates constraint dictionaries {agent_name: Constraints} from a conflict. """
+        # ... (remains the same) ...
+        constraints_dict = {}
+        if conflict is None: return constraints_dict
+
+        agent1 = conflict.agent_1
+        agent2 = conflict.agent_2
+
+        if conflict.type == Conflict.VERTEX:
+            vc = VertexConstraint(conflict.time, conflict.location_1)
+            c1 = Constraints(); c1.vertex_constraints.add(vc)
+            c2 = Constraints(); c2.vertex_constraints.add(vc)
+            constraints_dict[agent1] = c1
+            constraints_dict[agent2] = c2
+
+        elif conflict.type == Conflict.EDGE:
+            constraint_time = conflict.time - 1
+            ec1 = EdgeConstraint(constraint_time, conflict.location_1, conflict.location_2)
+            ec2 = EdgeConstraint(constraint_time, conflict.location_2, conflict.location_1)
+            c1 = Constraints(); c1.edge_constraints.add(ec1)
+            c2 = Constraints(); c2.edge_constraints.add(ec2)
+            constraints_dict[agent1] = c1
+            constraints_dict[agent2] = c2
+        return constraints_dict
+
+
+    def get_state(self, agent_name, path, t):
+        """ Safely gets an agent's state at time t, holding goal state if t exceeds path length. """
+        # ... (remains the same) ...
+        if not path:
+             start_state = self.agent_dict.get(agent_name, {}).get("start")
+             if start_state:
+                  return State(t, start_state.location)
+             else:
+                  print(f"Error in get_state: Agent '{agent_name}' has no path and no registered start state.")
+                  return None
+
+        if t < len(path):
+            return path[t]
+        else:
+            last_state = path[-1]
+            return State(t, last_state.location)
+
 
     def compute_solution(self):
+        """ Computes paths for all agents using A* based on constraints in self.constraint_dict. """
+        # ... (remains the same) ...
         solution = {}
-        for agent in self.agent_dict.keys():
-            self.constraints = self.constraint_dict.setdefault(agent, Constraints())
-            local_solution = self.a_star.search(agent)
+        for agent_name in self.agent_dict.keys():
+            # Set self.constraints for the A* call for this agent
+            self.constraints = self.constraint_dict.get(agent_name, Constraints())
+            local_solution = self.a_star.search(agent_name)
             if not local_solution:
-                return False
-            solution.update({agent: local_solution})
+                return None # Infeasible
+            solution[agent_name] = local_solution
+        # Reset self.constraints after planning for all agents? Maybe not necessary.
+        # self.constraints = Constraints()
         return solution
 
+
     def compute_solution_cost(self, solution):
-        return sum([len(path) for path in solution.values()])
+        """ Computes the Sum of Costs (SoC) for a given solution dictionary. """
+        # ... (remains the same) ...
+        if not solution: return float('inf')
+        total_cost = 0
+        for path in solution.values():
+            if path and len(path) > 1:
+                total_cost += len(path) - 1
+        return total_cost
 
 
 class HighLevelNode(object):
+    """ Represents a node in the CBS Constraint Tree (CT). """
+    # ... (remains the same as previous version, including __lt__) ...
     def __init__(self):
         self.solution = {}
         self.constraint_dict = {}
-        self.cost = 0
-
-    def __eq__(self, other):
-        if not isinstance(other, type(self)):
-            return NotImplemented
-        return self.solution == other.solution and self.cost == other.cost
-
-    def __hash__(self):
-        return hash((self.cost))
+        self.cost = float('inf')
 
     def __lt__(self, other):
-        return self.cost < other.cost
+        if not isinstance(other, HighLevelNode): return NotImplemented
+        num_constraints_self = sum(len(c.vertex_constraints) + len(c.edge_constraints) for c in self.constraint_dict.values())
+        num_constraints_other = sum(len(c.vertex_constraints) + len(c.edge_constraints) for c in other.constraint_dict.values())
+        if self.cost != other.cost:
+            return self.cost < other.cost
+        else:
+            return num_constraints_self < num_constraints_other
+
+    def __eq__(self, other):
+         if not isinstance(other, HighLevelNode): return NotImplemented
+         # Equality check might involve constraints for closed list
+         return self.cost == other.cost and self.constraint_dict == other.constraint_dict
+
+    def __hash__(self):
+         # Hashing based on constraints
+         return hash((self.cost, frozenset(self.constraint_dict.items())))
 
 
 class CBS(object):
+    """ Conflict-Based Search High-Level Solver using A* for low-level search. """
+    # ... (init remains the same) ...
     def __init__(self, environment, verbose=True):
+        if not isinstance(environment, Environment):
+             raise TypeError("CBS requires an Environment object.")
         self.env = environment
         self.verbose = verbose
-        self.open_set = set()
-        self.closed_set = set()
+        self.open_list = [] # Use list as min-heap (priority queue) managed by heapq
+        # self.closed_list = set() # Optional: Store hashes/keys of visited constraint sets
 
     def search(self):
-        start = HighLevelNode()
-        # TODO: Initialize it in a better way
-        start.constraint_dict = {}
-        for agent in self.env.agent_dict.keys():
-            start.constraint_dict[agent] = Constraints()
-        start.solution = self.env.compute_solution()
-        if not start.solution:
+        """ Performs the high-level CBS search. """
+        # ... (start node initialization remains the same) ...
+        start_node = HighLevelNode()
+        start_node.constraint_dict = {agent: Constraints() for agent in self.env.agent_dict.keys()}
+        self.env.constraint_dict = start_node.constraint_dict
+        start_node.solution = self.env.compute_solution()
+
+        if start_node.solution is None:
+            if self.verbose: print("CBS Error: Initial solution could not be computed.")
             return {}
-        start.cost = self.env.compute_solution_cost(start.solution)
 
-        self.open_set |= {start}
-        if self.verbose:
-            print("Initializing search")
-        count = 0
-        while self.open_set:
-            if self.verbose:
-                if count % 20 == 0:
-                    print("Still searching")
-            count += 1
-            P = min(self.open_set)
-            self.open_set -= {P}
-            self.closed_set |= {P}
+        start_node.cost = self.env.compute_solution_cost(start_node.solution)
+        heapq.heappush(self.open_list, start_node)
 
-            self.env.constraint_dict = P.constraint_dict
-            conflict_dict = self.env.get_first_conflict(P.solution)
-            if not conflict_dict:
-                if self.verbose:
-                    print("solution found")
+        if self.verbose: print(f"Initializing CBS search. Start node cost: {start_node.cost}")
+        nodes_generated = 0
+        nodes_expanded = 0
 
-                return self.generate_plan(P.solution)
+        while self.open_list:
+            nodes_expanded += 1
+            # ... (verbose printing) ...
+            if self.verbose and nodes_expanded % 100 == 0:
+                print(f"CBS search... Open list size: {len(self.open_list)}, Nodes expanded: {nodes_expanded}")
 
-            constraint_dict = self.env.create_constraints_from_conflict(conflict_dict)
+            current_node = heapq.heappop(self.open_list)
 
-            for agent in constraint_dict.keys():
-                new_node = deepcopy(P)
-                new_node.constraint_dict[agent].add_constraint(constraint_dict[agent])
+            first_conflict = self.env.get_first_conflict(current_node.solution)
 
-                self.env.constraint_dict = new_node.constraint_dict
-                new_node.solution = self.env.compute_solution()
-                if not new_node.solution:
+            if first_conflict is None:
+                if self.verbose: print(f"CBS Success: Solution found after expanding {nodes_expanded} nodes. Final Cost: {current_node.cost}")
+                return current_node.solution # Return internal solution format
+
+            if self.verbose > 1:
+                 print(f"  Node {nodes_expanded}: Cost={current_node.cost}, Conflict={first_conflict}")
+
+            new_constraint_pairs = self.env.create_constraints_from_conflict(first_conflict)
+
+            for agent_involved, added_constraint in new_constraint_pairs.items():
+                nodes_generated += 1
+                if self.verbose > 1: print(f"    Branching {nodes_generated} for {agent_involved} with constraint: {added_constraint}")
+
+                successor_constraints_dict = deepcopy(current_node.constraint_dict)
+                successor_constraints_dict[agent_involved].add_constraint(added_constraint)
+
+                # --- Re-plan ---
+                self.env.constraint_dict = successor_constraints_dict
+                # Call A* via the environment object
+                new_path_agent = self.env.a_star.search(agent_involved) # CORRECTED CALL
+
+                if new_path_agent is None:
+                    if self.verbose > 1: print(f"      Pruning branch: No path found for {agent_involved}.")
                     continue
-                new_node.cost = self.env.compute_solution_cost(new_node.solution)
 
-                # TODO: ending condition
-                if new_node not in self.closed_set:
-                    self.open_set |= {new_node}
+                successor_node = HighLevelNode()
+                successor_node.constraint_dict = successor_constraints_dict
+                successor_node.solution = deepcopy(current_node.solution)
+                successor_node.solution[agent_involved] = new_path_agent
+                successor_node.cost = self.env.compute_solution_cost(successor_node.solution)
 
+                heapq.heappush(self.open_list, successor_node)
+                if self.verbose > 1: print(f"      Added successor node {nodes_generated}. New cost: {successor_node.cost}")
+                # --- End Re-plan ---
+
+        if self.verbose: print(f"CBS Failure: Open list empty after expanding {nodes_expanded} nodes. No solution found.")
         return {}
 
-    def generate_plan(self, solution):
+    # ... (generate_plan_from_solution remains the same) ...
+    def generate_plan_from_solution(self, solution_internal):
+        """ Converts the internal solution (list of State objects) to the output YAML format. """
         plan = {}
-        for agent, path in solution.items():
-            path_dict_list = [
-                {"t": state.time, "x": state.location.x, "y": state.location.y}
-                for state in path
-            ]
+        if not solution_internal: return plan
+        for agent, path in solution_internal.items():
+            if not path:
+                 plan[agent] = []
+                 continue
+            path_dict_list = [{"t": state.time, "x": state.location.x, "y": state.location.y} for state in path]
             plan[agent] = path_dict_list
         return plan
 
 
+# ... (main function remains the same) ...
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("param", help="input file containing map and obstacles")
-    parser.add_argument("output", help="output file with the schedule")
+    parser = argparse.ArgumentParser(description="Run Conflict-Based Search MAPF solver.")
+    parser.add_argument("param", help="Input YAML file containing map and agents definition.")
+    parser.add_argument("output", help="Output YAML file to write the schedule.")
     args = parser.parse_args()
-
-    # Read from input file
-    with open(args.param, "r") as param_file:
-        try:
-            param = yaml.load(param_file, Loader=yaml.FullLoader)
-        except yaml.YAMLError as exc:
-            print(exc)
-
-    dimension = param["map"]["dimensions"]
-    obstacles = param["map"]["obstacles"]
-    agents = param["agents"]
-
-    env = Environment(dimension, agents, obstacles)
-
-    # Searching
-    cbs = CBS(env)
-    solution = cbs.search()
-    if not solution:
-        print(" Solution not found")
-        return
-
-    # Write to output file
-    output = dict()
-    output["schedule"] = solution
-    output["cost"] = env.compute_solution_cost(solution)
-    with open(args.output, "w") as output_yaml:
-        yaml.safe_dump(output, output_yaml)
-
+    try:
+        with open(args.param, "r") as param_file:
+            param = yaml.safe_load(param_file)
+            if param is None: raise ValueError("Input file is empty or invalid YAML.")
+        if "map" not in param or "dimensions" not in param["map"]: raise KeyError("Missing 'map/dimensions' in input.")
+        if "agents" not in param: raise KeyError("Missing 'agents' list in input.")
+        dimension = param["map"]["dimensions"]
+        obstacles_yaml = param["map"].get("obstacles", [])
+        agents_yaml = param["agents"]
+        obstacles_list = [list(obs) for obs in obstacles_yaml] if obstacles_yaml else []
+        env = Environment(dimension, agents_yaml, obstacles_list)
+        cbs_solver = CBS(env, verbose=True)
+        solution_internal = cbs_solver.search()
+        if not solution_internal:
+            print(" CBS search completed: Solution not found.")
+            with open(args.output, "w") as output_yaml:
+                 yaml.safe_dump({"schedule": {}, "cost": -1, "status": "No Solution"}, output_yaml)
+            return
+        solution_output_format = cbs_solver.generate_plan_from_solution(solution_internal)
+        final_cost = env.compute_solution_cost(solution_internal)
+        output_data = dict()
+        output_data["schedule"] = solution_output_format
+        output_data["cost"] = final_cost
+        output_data["status"] = "Success"
+        with open(args.output, "w") as output_yaml:
+            yaml.safe_dump(output_data, output_yaml, default_flow_style=None, sort_keys=False)
+        print(f"\nSolution found (Cost: {final_cost}) and written to {args.output}")
+    except FileNotFoundError: print(f"Error: Input file not found at {args.param}")
+    except (KeyError, ValueError, TypeError) as e: print(f"Error processing input file or setting up environment: {e}")
+    except yaml.YAMLError as exc: print(f"Error parsing YAML input file {args.param}: {exc}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()

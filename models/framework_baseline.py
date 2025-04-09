@@ -1,268 +1,127 @@
-# File: data_loader.py
-import os
-import numpy as np
-from tqdm import tqdm
+# File: models/framework_baseline.py
+# (Modified: Removed inplace=True from ReLUs)
+
 import torch
-from torch.utils import data
-from torch.utils.data import DataLoader
+import torch.nn as nn
+from .networks.utils_weights import weights_init
+from copy import copy
+import numpy as np
 
-
-class GNNDataLoader:
+class Network(nn.Module):
     def __init__(self, config):
+        super().__init__()
         self.config = config
+        self.num_agents = self.config["num_agents"] # Not strictly needed for forward, but good for consistency
 
-        # Ensure 'train' key exists in config
-        if 'train' not in self.config:
-            raise ValueError("Missing 'train' section in configuration.")
+        # --- Determine FOV size ---
+        pad = self.config.get("pad", 3)
+        self.fov_size = (pad * 2) - 1
+        print(f"Framework Baseline: Using FOV size {self.fov_size}x{self.fov_size} (pad={pad})")
 
-        # Ensure essential keys exist for CreateDataset
-        if 'batch_size' not in self.config or 'num_workers' not in self.config:
-             raise ValueError("Missing 'batch_size' or 'num_workers' in top-level configuration.")
+        self.num_actions = 5
 
-        print("Initializing training dataset...") # Added print
-        train_set = CreateDataset(self.config, "train")
+        # --- MLP Encoder Config ---
+        dim_encoder_mlp = self.config["encoder_layers"]
+        self.compress_Features_dim = self.config["encoder_dims"]
 
-        # Check if dataset is empty before creating DataLoader
-        if len(train_set) == 0:
-             print("\nERROR: CreateDataset('train') resulted in an empty dataset.")
-             print("Please check:")
-             print(f"  - Path exists and is correct: {self.config['train'].get('root_dir')}")
-             print(f"  - Dataset directory contains valid 'case_*' subdirectories with required .npy files.")
-             print(f"  - Filtering parameters (min_time, max_time_dl, nb_agents) match the data.")
-             raise RuntimeError("Training dataset is empty after loading attempt.") # Modified error
+        # --- Action MLP Config ---
+        dim_action_mlp = self.config["action_layers"]
+        action_features_out = [self.num_actions]
+
+        ############################################################
+        # CNN Encoder (Input: Agent FOV)
+        ############################################################
+        cnn_input_channels = 3 # Expects: Obstacles/Agents, Goal, Self
+        channels = [cnn_input_channels] + self.config["channels"]
+        num_conv_layers = len(channels) - 1
+        strides = self.config.get("strides", [1] * num_conv_layers)
+        padding_size = self.config.get("padding", [1] * num_conv_layers)
+        filter_taps = self.config.get("kernels", [3] * num_conv_layers)
+
+        if not (len(strides) == len(padding_size) == len(filter_taps) == num_conv_layers):
+             raise ValueError("CNN layer parameter lengths mismatch")
+
+        conv_layers = []
+        H_out, W_out = self.fov_size, self.fov_size
+        for l in range(num_conv_layers):
+            conv_layers.append(nn.Conv2d(channels[l], channels[l + 1], filter_taps[l], strides[l], padding_size[l], bias=True))
+            conv_layers.append(nn.BatchNorm2d(num_features=channels[l + 1]))
+            # --- MODIFICATION: Removed inplace=True ---
+            conv_layers.append(nn.ReLU(inplace=False))
+            H_out = int((H_out + 2 * padding_size[l] - filter_taps[l]) / strides[l]) + 1
+            W_out = int((W_out + 2 * padding_size[l] - filter_taps[l]) / strides[l]) + 1
+
+        self.convLayers = nn.Sequential(*conv_layers)
+        self.cnn_flat_feature_dim = channels[-1] * H_out * W_out
+        print(f"Framework Baseline: CNN output feature dim calculated: {self.cnn_flat_feature_dim}")
+
+        ############################################################
+        # MLP Encoder (Input: Flattened CNN Features)
+        ############################################################
+        mlp_encoder_input_dim_config = self.config.get("last_convs", [self.cnn_flat_feature_dim])[0]
+        if mlp_encoder_input_dim_config != self.cnn_flat_feature_dim:
+            print(f"Framework Baseline WARNING: Config 'last_convs' mismatch. Using calculated value.")
+        mlp_encoder_input_dim = self.cnn_flat_feature_dim
+
+        mlp_encoder_dims = [mlp_encoder_input_dim] + self.compress_Features_dim
+
+        mlp_encoder_layers = []
+        for l in range(dim_encoder_mlp):
+            mlp_encoder_layers.append(nn.Linear(mlp_encoder_dims[l], mlp_encoder_dims[l+1]))
+            # --- MODIFICATION: Removed inplace=True ---
+            mlp_encoder_layers.append(nn.ReLU(inplace=False)) # Apply activation
+
+        self.compressMLP = nn.Sequential(*mlp_encoder_layers)
+        # Feature dimension after MLP encoder (input to Action MLP)
+        self.action_mlp_input_dim = mlp_encoder_dims[-1]
+        print(f"Framework Baseline: MLP Encoder output dim (Action MLP input): {self.action_mlp_input_dim}")
 
 
-        self.train_loader = DataLoader(
-            train_set,
-            batch_size=self.config["batch_size"],
-            shuffle=True,
-            num_workers=self.config["num_workers"],
-            pin_memory=torch.cuda.is_available(), # Pin memory only if using CUDA
-            # persistent_workers=True if self.config["num_workers"] > 0 else False # Optional
-        )
-        print(f"Initialized DataLoader with {len(train_set)} total samples (timesteps).") # Modified print
+        ############################################################
+        # MLP Action Policy (Input: Features after MLP Encoder)
+        ############################################################
+        action_mlp_dims = [self.action_mlp_input_dim] + action_features_out
 
-        # --- Optional: Initialize Validation Loader ---
-        self.valid_loader = None
-        if 'valid' in self.config and self.config.get('valid'):
-            print("Initializing validation dataset...")
-            valid_set = CreateDataset(self.config, "valid")
-            if len(valid_set) > 0:
-                self.valid_loader = DataLoader(
-                    valid_set,
-                    batch_size=self.config["batch_size"], # Or a different batch size for validation
-                    shuffle=False, # No need to shuffle validation data
-                    num_workers=self.config["num_workers"],
-                    pin_memory=torch.cuda.is_available(),
-                    # persistent_workers=True if self.config["num_workers"] > 0 else False
-                )
-                print(f"Initialized Validation DataLoader with {len(valid_set)} total samples (timesteps).")
-            else:
-                print("WARNING: Validation dataset configured but resulted in 0 samples.")
-        # --- End Validation Loader ---
+        action_mlp_layers = []
+        for l in range(dim_action_mlp):
+            action_mlp_layers.append(nn.Linear(action_mlp_dims[l], action_mlp_dims[l+1]))
+            if l < dim_action_mlp - 1: # Add ReLU except after last layer
+                # --- MODIFICATION: Removed inplace=True ---
+                action_mlp_layers.append(nn.ReLU(inplace=False))
+
+        self.actionMLP = nn.Sequential(*action_mlp_layers)
+
+        # Initialize weights
+        self.apply(weights_init)
+        print("Framework Baseline: Model initialized.")
 
 
-class CreateDataset(data.Dataset):
-    def __init__(self, config, mode):
+    def forward(self, states): # Baseline doesn't use GSO
         """
+        Forward pass for the baseline model (CNN -> MLP -> ActionMLP).
         Args:
-            config (dict): The main configuration dictionary.
-            mode (string): 'train' or 'valid'.
+            states (Tensor): FOV observations, shape [B, N, C, H, W]
+        Returns:
+            Tensor: Action logits, shape [B, N, A]
         """
-        mode_config = config.get(mode)
-        if mode_config is None:
-            raise ValueError(f"Configuration missing section for mode: '{mode}'")
+        batch_size = states.shape[0]
+        expected_state_shape = (self.num_agents, 3, self.fov_size, self.fov_size)
+        if states.shape[1:] != expected_state_shape:
+            raise ValueError(f"Input states shape error. Expected [B, {self.num_agents}, 3, {self.fov_size}, {self.fov_size}], "
+                             f"Got {states.shape}")
 
-        self.config = mode_config
-        self.dir_path = self.config.get("root_dir")
-        if not self.dir_path:
-             raise ValueError(f"'root_dir' not specified in '{mode}' config section.")
+        # 1. CNN Encoder
+        states_reshaped = states.reshape(batch_size * self.num_agents, 3, self.fov_size, self.fov_size)
+        cnn_features = self.convLayers(states_reshaped)
+        cnn_features_flat = cnn_features.view(batch_size * self.num_agents, -1)
 
-        # Use main config for global num_agents if not in mode_config
-        self.nb_agents = self.config.get("nb_agents", config.get("num_agents"))
-        if self.nb_agents is None:
-             raise ValueError("Number of agents ('nb_agents' or 'num_agents') not specified in config.")
+        # 2. MLP Encoder
+        encoded_features = self.compressMLP(cnn_features_flat) # Shape [B*N, action_mlp_input_dim]
 
-        self.min_time_filter = self.config.get("min_time")
-        if self.min_time_filter is None:
-             print(f"Warning: 'min_time' not specified in '{mode}' config. Defaulting min_time to 0.")
-             self.min_time_filter = 0
+        # 3. MLP Action Policy
+        action_logits_flat = self.actionMLP(encoded_features) # Shape [B*N, num_actions]
 
-        self.max_time_filter = self.config.get("max_time_dl")
-        if self.max_time_filter is None:
-             print(f"Warning: 'max_time_dl' not specified in '{mode}' config. Defaulting max_time to infinity.")
-             self.max_time_filter = float('inf')
+        # Reshape back to per-agent logits: [B*N, num_actions] -> [B, N, num_actions]
+        action_logits = action_logits_flat.view(batch_size, self.num_agents, self.num_actions)
 
-        if not os.path.isdir(self.dir_path):
-            print(f"ERROR: Dataset directory not found or is not a directory: {self.dir_path}")
-            self.count = 0
-            self.cases = []
-            self._initialize_empty_arrays()
-            return
-
-        self.cases = sorted([d for d in os.listdir(self.dir_path) if d.startswith("case_") and os.path.isdir(os.path.join(self.dir_path, d))],
-                           key=lambda x: int(x.split('_')[-1])) # Sort cases
-        print(f"Found {len(self.cases)} potential cases in {self.dir_path}")
-
-        valid_states_list = []
-        valid_trajectories_list = []
-        valid_gsos_list = []
-
-        cases_processed = 0
-        cases_skipped = 0
-        pbar_load = tqdm(self.cases, desc=f"Loading Dataset ({mode})", unit="case", leave=False)
-        for case in pbar_load:
-            case_path = os.path.join(self.dir_path, case)
-            state_file = os.path.join(case_path, "states.npy")
-            # ---- FIX 1: Correct trajectory filename ----
-            traj_file = os.path.join(case_path, "trajectory.npy") # Changed from trajectory_record.npy
-            gso_file = os.path.join(case_path, "gso.npy")
-
-            if not (os.path.exists(state_file) and os.path.exists(traj_file) and os.path.exists(gso_file)):
-                cases_skipped += 1
-                continue
-
-            try:
-                # Load data for the case
-                # record.py saves:
-                # states: (T+1, N, C, H, W) -> num_steps+1 states
-                # trajectory: (N, T) -> num_steps actions
-                # gso: (T+1, N, N) -> num_steps+1 gsos
-                state_data = np.load(state_file)
-                traj_data = np.load(traj_file)
-                gso_data = np.load(gso_file)
-
-                # --- Validation and Filtering ---
-                if state_data.ndim != 5 or traj_data.ndim != 2 or gso_data.ndim != 3:
-                    # print(f"Skipping {case}: Invalid dimensions S:{state_data.ndim}, T:{traj_data.ndim}, G:{gso_data.ndim}") # Debug
-                    cases_skipped += 1
-                    continue
-
-                if not (state_data.shape[1] == traj_data.shape[0] == gso_data.shape[1] == self.nb_agents):
-                    # print(f"Skipping {case}: Agent mismatch (Exp:{self.nb_agents} S:{state_data.shape[1]} T:{traj_data.shape[0]} G:{gso_data.shape[1]})") # Debug
-                    cases_skipped += 1
-                    continue
-
-                num_steps = traj_data.shape[1] # Number of actions/steps
-
-                # ---- FIX 2: Correct time step consistency check ----
-                # Check if states and GSO have T+1 length compared to trajectory T length
-                if not (state_data.shape[0] == gso_data.shape[0] == num_steps + 1):
-                     # print(f"Skipping {case}: Time step mismatch (Traj: {num_steps}, State: {state_data.shape[0]}, GSO: {gso_data.shape[0]}, Exp State/GSO: {num_steps + 1})") # Debug
-                     cases_skipped += 1
-                     continue
-
-                # Apply time filtering based on the number of steps (trajectory length)
-                if not (self.min_time_filter <= num_steps <= self.max_time_filter):
-                    # print(f"Skipping {case}: Trajectory length {num_steps} outside range [{self.min_time_filter}, {self.max_time_filter}]") # Debug
-                    cases_skipped += 1
-                    continue
-                # --- End Validation ---
-
-                # Add data for each timestep as a sample
-                # We use state[t], action[t], gso[t] as one sample
-                for t in range(num_steps):
-                    valid_states_list.append(state_data[t])       # State at time t (N, C, H, W)
-                    valid_trajectories_list.append(traj_data[:, t]) # Action taken at time t (N,)
-                    valid_gsos_list.append(gso_data[t])           # GSO corresponding to state at t (N, N)
-
-                cases_processed += 1
-                pbar_load.set_postfix({"Loaded": cases_processed, "Skipped": cases_skipped})
-
-            except Exception as e:
-                print(f"\nWarning: Error processing {case}: {e}. Skipping.")
-                cases_skipped += 1
-                continue
-
-        self.count = len(valid_states_list)
-        print(f"\nFinished loading dataset '{mode}'. Processed {cases_processed} cases, skipped {cases_skipped}.")
-        print(f"Total individual samples (timesteps): {self.count}")
-
-        if self.count == 0:
-            print(f"WARNING: No valid samples found for mode '{mode}' after loading and filtering!")
-            self._initialize_empty_arrays()
-        else:
-            self.states = np.stack(valid_states_list, axis=0)
-            self.trajectories = np.stack(valid_trajectories_list, axis=0)
-            self.gsos = np.stack(valid_gsos_list, axis=0)
-            print(f"Final shapes: States={self.states.shape}, Trajectories={self.trajectories.shape}, GSOs={self.gsos.shape}")
-            # Optional: Calculate statistics only if needed, can be slow
-            # zeros_stat = self.statistics()
-            # print(f"Trajectory Action '0' (Idle) Proportion: {zeros_stat:.4f}")
-
-    def _initialize_empty_arrays(self):
-        """Helper to set empty arrays if loading fails or results in no samples."""
-        self.states = np.array([])
-        self.trajectories = np.array([])
-        self.gsos = np.array([])
-
-    def statistics(self):
-        """Calculates proportion of action 0 (idle) in trajectories."""
-        if self.trajectories.size == 0:
-            return 0.0
-        zeros = np.count_nonzero(self.trajectories == 0)
-        total_elements = self.trajectories.size # Use .size for total elements
-        if total_elements == 0:
-            return 0.0
-        return zeros / total_elements
-
-    def __len__(self):
-        return self.count
-
-    def __getitem__(self, index):
-        """
-        Returns a single sample (data for one timestep).
-        state : (agents, channels, dimX, dimY),
-        trayec: (agents,) - Actions should be LongTensor
-        gsos: (agents, agents)
-        """
-        if index >= self.count:
-             raise IndexError(f"Index {index} out of bounds for dataset with size {self.count}")
-
-        states_sample = torch.from_numpy(self.states[index]).float()
-        # ---- FIX 3: Convert actions to Long ----
-        trayec_sample = torch.from_numpy(self.trajectories[index]).long() # Use .long() for actions
-        gsos_sample = torch.from_numpy(self.gsos[index]).float()
-
-        return states_sample, trayec_sample, gsos_sample
-
-# --- Test Block (Example - adapt paths/config as needed) ---
-# if __name__ == "__main__":
-#     test_config = {
-#         "train": {
-#             "root_dir": "dataset/5_8_28/train", # Point to actual data
-#             "mode": "train",
-#             "nb_agents": 5,
-#             "min_time": 5,
-#             "max_time_dl": 55, # Use updated max time
-#         },
-#         "valid": {
-#             "root_dir": "dataset/5_8_28/val",
-#             "mode": "valid",
-#             "nb_agents": 5,
-#             "min_time": 5,
-#             "max_time_dl": 55,
-#         },
-#         "num_agents": 5,
-#         "batch_size": 4,
-#         "num_workers": 0,
-#     }
-#     print("--- Testing GNNDataLoader ---")
-#     try:
-#         data_loader_instance = GNNDataLoader(test_config)
-#         if data_loader_instance.train_loader and len(data_loader_instance.train_loader.dataset) > 0:
-#             print("\n--- Iterating through train_loader ---")
-#             count = 0
-#             for batch_s, batch_t, batch_g in data_loader_instance.train_loader:
-#                 print(f"Batch {count}:")
-#                 print(f"  States Shape: {batch_s.shape}, Type: {batch_s.dtype}")
-#                 print(f"  Traj Shape:   {batch_t.shape}, Type: {batch_t.dtype}") # Should be torch.int64 (Long)
-#                 print(f"  GSO Shape:    {batch_g.shape}, Type: {batch_g.dtype}")
-#                 count += 1
-#                 if count >= 2: break
-#         else:
-#              print("\nTrain loader is empty or not created.")
-#     except Exception as e:
-#         print(f"\nError during data loader test: {e}")
-#         import traceback
-#         traceback.print_exc()
+        return action_logits

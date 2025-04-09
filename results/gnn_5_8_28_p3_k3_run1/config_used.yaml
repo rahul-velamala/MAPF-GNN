@@ -1,0 +1,56 @@
+exp_name: gnn_5_8_28_p3_k3_run1
+channels:
+- 16
+- 16
+- 16
+strides:
+- 1
+- 1
+- 1
+encoder_layers: 1
+encoder_dims:
+- 64
+graph_filters:
+- 3
+node_dims:
+- 128
+msg_type: gcn
+action_layers: 1
+epochs: 15
+learning_rate: 3e-4
+weight_decay: 1e-4
+batch_size: 128
+num_workers: 0
+eval_frequency: 5
+net_type: gnn
+online_expert:
+  frequency_epochs: 4
+  num_cases_to_run: 500
+  cbs_timeout_seconds: 10
+tests_episodes: 100
+num_agents: 5
+board_size:
+- 28
+- 28
+obstacles: 8
+pad: 3
+map_shape:
+- 5
+- 5
+sensing_range: 4
+max_time: 120
+max_steps: 120
+max_steps_train_inference: 180
+train:
+  root_dir: dataset/5_8_28_fov5/train
+  mode: train
+  min_time: 5
+  max_time_dl: 55
+  nb_agents: 5
+valid:
+  root_dir: dataset/5_8_28_fov5/val
+  mode: valid
+  min_time: 5
+  max_time_dl: 55
+  nb_agents: 5
+device: cuda:0
