@@ -22,7 +22,7 @@ msg_type: 'gcn'         # Type of GNN layer ('gcn' or 'message')
 action_layers: 1        # Number of hidden layers in action MLP
 
 # --- Training Hyperparameters ---
-epochs: 50
+epochs: 15
 learning_rate: 3e-4     # Example value
 weight_decay: 1e-4      # Example value
 batch_size: 128
