@@ -1,58 +1,72 @@
 # File: configs/config_baseline.yaml (Revised)
 
 # Experiment Name / Output Directory (within results/)
-exp_name: 'baseline_5_6_16_p3' # Descriptive name: model_agents_obstacles_size_pad
+# !!! IMPORTANT: CHANGE 'exp_name' for each new training run !!!
+exp_name: 'baseline_CHANGE_ME' # e.g., baseline_5_8_28_p3
 
 # --- Model Architecture (Baseline Specific) ---
-# CNN (Input: FOV)
-channels: [32, 16, 16]  # Output channels of CNN layers. Input is 3 channels (obs/agents, goal, self) <- COMMENT UPDATED
-strides: [1, 1, 1]        # Length MUST match number of CNN layers (implied by channels) <- CHANGED
+# CNN (Input: FOV - defined by 'pad' below)
+# Input channels = 3 (Obstacles/Agents, Goal, Self) based on env_graph_gridv1.py
+channels: [32, 16, 16]  # Output channels of CNN layers. e.g., [32, 64] means 2 layers.
+strides: [1, 1, 1]        # Stride for each CNN layer. Length MUST match len(channels).
+# kernels: [3, 3, 3]      # Optional: Explicitly define kernel sizes (default 3x3 assumed by framework if omitted). Length must match len(channels).
+# paddings: [1, 1, 1]     # Optional: Explicitly define padding (default 1 assumed by framework if omitted). Length must match len(channels).
 
-# Encoder MLP (after flatten)
-encoder_layers: 1
-last_convs: [400]      # Output features after flatten (VERIFIED for 5x5 FOV, 16 out channels)
-encoder_dims: [64]     # Output dim of encoder MLP
+# Encoder MLP (after CNN flatten)
+encoder_layers: 1         # Number of layers in the MLP *after* the CNN. 1 means Input -> encoder_dims[0].
+# last_convs: [400]       # Optional: Expected flattened dim after CNN. Framework calculates this if omitted.
+encoder_dims: [64]        # Output dimension(s) of encoder MLP. Length must match encoder_layers.
 
-# Policy MLP (after encoder)
-action_layers: 1       # Number of hidden layers in action MLP (1 means Linear(encoder_dim -> 5))
+# Policy MLP (after encoder MLP)
+action_layers: 1          # Number of layers in the action MLP. 1 means EncoderOutput -> num_actions.
+# action_hidden_dims: [32] # Optional: Specify hidden layer sizes if action_layers > 1.
 
 # --- Training Hyperparameters ---
-epochs: 60
-learning_rate: 3e-4    # Example value
-weight_decay: 1e-4     # Example value
-batch_size: 128
-num_workers: 3         # Set to 0 if debugging DataLoader issues
-eval_frequency: 5      # Evaluate every 5 epochs
-net_type: 'baseline'   # Model type
+epochs: 50
+learning_rate: 3e-4       # Adam learning rate.
+weight_decay: 1e-4        # Adam weight decay (L2 regularization).
+batch_size: 128           # Number of samples (timesteps) per batch. Adjust based on GPU memory.
+num_workers: 0            # DataLoader workers. Start with 0 for debugging. Increase (e.g., 2, 4) if data loading is a bottleneck.
+eval_frequency: 5         # Evaluate model performance on validation set every N epochs.
+net_type: 'baseline'      # MUST be 'baseline' to load the correct framework.
 
 # --- Evaluation ---
-tests_episodes: 25     # Number of episodes for evaluation phase
+# Parameters for evaluation runs performed *during* training.
+tests_episodes: 25        # Number of random episodes per evaluation phase.
+# eval_max_steps: 60      # Optional: Override max steps specifically for eval episodes (defaults to max_steps).
+# eval_board_size: [16, 16] # Optional: Override board size for eval (defaults to board_size).
+# eval_obstacles: 8       # Optional: Override obstacles for eval (defaults to obstacles).
+# eval_num_agents: 5      # Optional: Override agents for eval (defaults to num_agents).
 
 # --- Environment & Simulation Parameters ---
-# These MUST match the data generation process for the loaded dataset
-num_agents: 5
-board_size: [16, 16]   # Grid dimensions [rows, cols]
-obstacles: 6           # Number of obstacles
-pad: 3                 # Padding used for FOV calculation (gives 5x5 FOV)
-map_shape: [5, 5]      # FOV dimensions [rows, cols] - MUST match (2*pad - 1)
-max_time: 32           # Max steps per episode (for env truncation)
-max_steps: 32          # Max steps for evaluation episodes in train script
-# sensing_range: N/A   # Not used by baseline model
+# !!! IMPORTANT: These MUST match the parameters used to generate the dataset being loaded !!!
+num_agents: 5             # Number of agents. MUST match dataset AND data_loader config.
+board_size: [28, 28]      # Grid dimensions [rows, cols]. MUST match dataset.
+obstacles: 8              # Number of obstacles. MUST match dataset.
+pad: 3                    # Padding used for FOV calculation. Determines FOV size. MUST match dataset/model assumption.
+map_shape: [5, 5]         # FOV dimensions [Height, Width]. MUST equal [2*pad-1, 2*pad-1]. Check consistency!
+                          # Baseline model doesn't use GSO, so sensing_range is not strictly needed here.
+max_time: 120             # Max steps per episode in environment simulation (used for truncation in GraphEnv). Should be >= max trajectory length in data.
+max_steps: 120            # Max steps limit for *evaluation* episodes run during training (if eval_max_steps not set).
 
 # --- Data Loading ---
-# Global filters (can be overridden in train/valid)
-min_time: 1            # Min trajectory length to load (global fallback)
-
+# Settings for the DataLoader (see data_loader.py)
 train:
-    root_dir: 'dataset/5_6_16/train' # <<<--- IMPORTANT: UPDATE PATH TO YOUR ACTUAL DATASET ---<<<
-    mode: 'train'
-    min_time: 5           # Min trajectory length for training samples
-    max_time_dl: 30       # Max trajectory length for training samples (adjust based on dataset stats)
-    nb_agents: 5          # Number of agents in the dataset (should match num_agents)
+    # !!! IMPORTANT: Verify 'root_dir' points to the correct training data directory !!!
+    root_dir: 'dataset/5_8_28_fov5/train' # <<<--- UPDATE PATH TO YOUR ACTUAL TRAINING DATA ---<<<
+    mode: 'train'           # Internal key, keep as 'train'.
+    # --- Filters applied by DataLoader ---
+    min_time: 5             # Min trajectory length (T) for training samples. Adjust based on dataset.
+    max_time_dl: 55         # Max trajectory length (T) for training samples. Adjust based on dataset stats. Should be <= max_time.
+    # --- Consistency Check ---
+    nb_agents: 5            # Number of agents in the dataset files. MUST match global 'num_agents'.
 
 valid:
-    root_dir: 'dataset/5_6_16/val'   # <<<--- IMPORTANT: UPDATE PATH TO YOUR ACTUAL DATASET ---<<<
-    mode: 'valid'           # Use 'valid' as key for CreateDataset lookup
-    min_time: 5           # Min trajectory length for validation samples
-    max_time_dl: 30       # Max trajectory length for validation samples (adjust based on dataset stats)
-    nb_agents: 5          # Number of agents in the dataset
+    # !!! IMPORTANT: Verify 'root_dir' points to the correct validation data directory !!!
+    root_dir: 'dataset/5_8_28_fov5/val'   # <<<--- UPDATE PATH TO YOUR ACTUAL VALIDATION DATA ---<<<
+    mode: 'valid'           # Internal key, keep as 'valid'.
+    # --- Filters applied by DataLoader ---
+    min_time: 5             # Min trajectory length (T) for validation samples.
+    max_time_dl: 55         # Max trajectory length (T) for validation samples. Should be <= max_time.
+    # --- Consistency Check ---
+    nb_agents: 5            # Number of agents in the dataset files. MUST match global 'num_agents'.

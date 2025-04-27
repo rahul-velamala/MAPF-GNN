@@ -1,5 +1,5 @@
 # File: create_gif.py
-# (Modified with Collision Shielding and Robust Setup)
+# (Modified with REDUNDANT Collision Shielding Removed)
 
 import sys
 import os
@@ -10,24 +10,36 @@ import torch
 import imageio  # Library for creating GIFs
 from tqdm import tqdm # Add progress bar for simulation
 from pathlib import Path # Use Pathlib
+import logging # Use standard logging
+
+# --- Setup Logging ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+# --- --------------- ---
+
 
 # --- Add necessary paths if running from root ---
-# (Assuming standard project structure)
+# (Assuming standard project structure - adjust if needed)
+# script_dir = Path(__file__).parent.resolve()
+# project_root = script_dir.parent
+# sys.path.append(str(project_root))
 # --- -------------------------------------- ---
+
 
 # --- Import environment and model components ---
 try:
     from grid.env_graph_gridv1 import GraphEnv, create_goals, create_obstacles
     # Network class dynamically imported later
 except ImportError:
-    print("Error: Could not import environment classes.")
-    print("Ensure 'grid/env_graph_gridv1.py' exists and you're running from the project root.")
+    logger.error("Error: Could not import environment classes.")
+    logger.error("Ensure 'grid/env_graph_gridv1.py' exists and necessary paths are set.")
     sys.exit(1)
 # --- --------------------------------------- ---
 
+
 # --- Argument Parser ---
-parser = argparse.ArgumentParser(description="Generate GIF visualization for MAPF using a trained model with Collision Shielding.")
-parser.add_argument("--config", type=str, default="configs/config_gnn.yaml", help="Path to the configuration file used for training.")
+parser = argparse.ArgumentParser(description="Generate GIF visualization for MAPF using a trained model.")
+parser.add_argument("--config", type=str, default="configs/config_gnn.yaml", help="Path to the configuration file used for training.") # May need config_train_mat.yaml
 parser.add_argument("--model_path", type=str, required=True, help="Path to the saved model (.pt) file.")
 parser.add_argument("--output_gif", type=str, default="mapf_visualization.gif", help="Filename for the output GIF.")
 parser.add_argument("--seed", type=int, default=None, help="Optional random seed for reproducible scenario generation.")
@@ -36,276 +48,259 @@ parser.add_argument("--max_steps", type=int, default=None, help="Override max si
 args = parser.parse_args()
 # --- --------------- ---
 
+
 # --- Set Seed ---
 if args.seed is not None:
-    print(f"Using random seed: {args.seed}")
+    logger.info(f"Using random seed: {args.seed}")
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
     if torch.cuda.is_available(): torch.cuda.manual_seed_all(args.seed)
 # --- -------- ---
 
+
 # --- Load Configuration ---
 config_path = Path(args.config)
 if not config_path.is_file():
-    print(f"ERROR: Config file not found at {config_path}")
+    logger.error(f"ERROR: Config file not found at {config_path}")
     sys.exit(1)
 try:
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
     if config is None: raise ValueError("Config file is empty or invalid.")
 except Exception as e:
-    print(f"Error loading config {config_path}: {e}")
+    logger.error(f"Error loading config {config_path}: {e}")
     sys.exit(1)
 
 config["device"] = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {config['device']}")
+logger.info(f"Using device: {config['device']}")
 # --- ------------------ ---
+
 
 # --- Dynamically Import Model Class ---
 NetworkClass = None
 try:
     net_type = config.get("net_type", "gnn") # Default to gnn
+    logger.info(f"Attempting to load model type: {net_type}")
     if net_type == "baseline":
         from models.framework_baseline import Network as NetworkClass
+        logger.info("Imported Baseline Network.")
     elif net_type == "gnn":
+        # GNN model might have variations, check config further if needed
         msg_type = config.get("msg_type", "gcn").lower()
-        if msg_type == 'message':
-             from models.framework_gnn_message import Network as NetworkClass
-        else: # Default GNN is GCN
-             from models.framework_gnn import Network as NetworkClass
+        # Assuming framework_gnn handles different msg_types internally based on config
+        from models.framework_gnn import Network as NetworkClass
+        logger.info(f"Imported GNN Network (config msg_type: {msg_type}).")
+        # Older structure check (remove if framework_gnn handles types):
+        # if msg_type == 'message':
+        #      from models.framework_gnn_message import Network as NetworkClass
+        # else: # Default GNN is GCN/ADC handled by framework_gnn
+        #      from models.framework_gnn import Network as NetworkClass
     else:
         raise ValueError(f"Unknown net_type in config: {net_type}")
-    print(f"Using network type: {net_type}" + (f" ({msg_type})" if net_type == "gnn" else ""))
+    if NetworkClass is None: raise ImportError("Network class was not assigned.")
+    logger.info(f"Successfully imported NetworkClass: {NetworkClass.__name__}")
+
 except Exception as e:
-     print(f"Error importing model class: {e}")
+     logger.error(f"Error importing model class for net_type '{net_type}': {e}", exc_info=True)
      sys.exit(1)
 # --- ------------------------------ ---
+
 
 # --- Load Model ---
 model = NetworkClass(config)
 model.to(config["device"])
 model_load_path = Path(args.model_path)
-print(f"Loading model from: {model_load_path}")
+logger.info(f"Loading model from: {model_load_path}")
 if not model_load_path.is_file():
-    raise FileNotFoundError(f"Model file not found at: {model_load_path}.")
+    logger.error(f"Model file not found at: {model_load_path}.")
+    sys.exit(1)
 try:
     model.load_state_dict(torch.load(model_load_path, map_location=config["device"]))
     model.eval() # Set model to evaluation mode
-    print("Model loaded successfully.")
+    logger.info("Model loaded successfully.")
 except Exception as e:
-    print(f"Error loading model state_dict: {e}")
+    logger.error(f"Error loading model state_dict: {e}", exc_info=True)
     sys.exit(1)
 # --- ---------- ---
 
+
 # --- Setup Environment for a Single Episode ---
-print("Setting up environment for one episode...")
+logger.info("Setting up environment for one episode...")
 env = None
 try:
     # Use parameters from config to generate a scenario
-    board_dims = config.get("board_size", [28, 28])
-    # Ensure board_dims is a list/tuple of two ints
+    # Use eval_board_size if defined, otherwise board_size
+    board_dims = config.get("eval_board_size", config.get("board_size", [20, 20]))
     if isinstance(board_dims, int): board_dims = [board_dims, board_dims]
     if not isinstance(board_dims, (list, tuple)) or len(board_dims) != 2:
-         raise ValueError("Invalid 'board_size' in config.")
+         raise ValueError("Invalid 'board_size' or 'eval_board_size' in config.")
 
-    num_obstacles = config.get("obstacles", 8)
-    obstacles = create_obstacles(board_dims, num_obstacles)
+    # Use eval_obstacles if defined, otherwise obstacles
+    num_obstacles = config.get("eval_obstacles", config.get("obstacles", 40)) # Match defaults
+    obstacles = create_obstacles(tuple(board_dims), num_obstacles) # Use tuple for size
 
-    num_agents = config.get("num_agents", 5)
-    # Ensure num_agents matches model if model size is fixed
+    # Use eval_num_agents if defined, otherwise num_agents
+    num_agents = config.get("eval_num_agents", config.get("num_agents", 10)) # Match defaults
+    # Ensure num_agents matches model if model size is fixed (check attribute existence)
     if hasattr(model, 'num_agents') and num_agents != model.num_agents:
-         print(f"Warning: Config num_agents ({num_agents}) differs from model num_agents ({model.num_agents}). Using model's count.")
+         logger.warning(f"Config num_agents ({num_agents}) differs from model num_agents ({model.num_agents}). Using model's count: {model.num_agents}.")
          num_agents = model.num_agents
 
     # Generate valid starts and goals avoiding obstacles and each other
-    start_pos = create_goals(board_dims, num_agents, obstacles=obstacles)
+    start_pos = create_goals(tuple(board_dims), num_agents, obstacles=obstacles)
     # Avoid placing goals on obstacles OR start positions
     temp_obstacles_for_goals = np.vstack([obstacles, start_pos]) if obstacles.size > 0 else start_pos
-    goals = create_goals(board_dims, num_agents, obstacles=obstacles, current_starts=start_pos)
+    goals = create_goals(tuple(board_dims), num_agents, obstacles=temp_obstacles_for_goals) # Pass combined obstacles
 
     # Pass necessary config params to Env
     env_config_instance = config.copy()
     # Ensure env uses correct agent count, board size, pad etc.
     env_config_instance["num_agents"] = num_agents
     env_config_instance["board_size"] = board_dims
-    env_config_instance["pad"] = config.get("pad", 3) # Crucial for FOV matching model
-    # Set max_time for env based on args or config
-    max_steps_sim = args.max_steps if args.max_steps is not None else config.get("max_steps", config.get("max_time", 120))
+    # Use eval_pad if defined, otherwise pad (CRITICAL for FOV match)
+    env_config_instance["pad"] = config.get("eval_pad", config.get("pad", 6)) # Match defaults
+    # Use eval_sensing_range if defined, otherwise sensing_range
+    env_config_instance["sensing_range"] = config.get("eval_sensing_range", config.get("sensing_range", 5)) # Match defaults
+
+    # Set max_time for env based on args or config (prefer eval_max_steps)
+    max_steps_sim = args.max_steps if args.max_steps is not None else config.get("eval_max_steps", config.get("max_steps", config.get("max_time", 150))) # Match defaults
     env_config_instance["max_time"] = max_steps_sim
+
+    env_config_instance["render_mode"] = "rgb_array" # Force rgb_array for gif creation
 
     env = GraphEnv(config=env_config_instance,
                    goal=goals,
                    obstacles=obstacles,
                    starting_positions=start_pos)
-                   # sensing_range is read from config inside Env
 
     # Reset with seed if provided
     obs, info = env.reset(seed=args.seed)
-    print("Environment reset.")
+    logger.info("Environment reset and ready.")
+    logger.info(f"Simulating with Board: {env.board_rows}x{env.board_cols}, Agents: {env.nb_agents}, Pad: {env.pad}, MaxSteps: {max_steps_sim}")
 
 except Exception as e:
-     print(f"Error setting up environment: {e}")
-     import traceback; traceback.print_exc()
+     logger.error(f"Error setting up environment: {e}", exc_info=True)
      if env: env.close()
      sys.exit(1)
 # --- ------------------------------------ ---
 
+
 # --- Simulation and Frame Capture ---
 frames = []
-# Use max_steps_sim determined earlier
-print(f"Starting simulation for max {max_steps_sim} steps...")
+logger.info(f"Starting simulation for max {max_steps_sim} steps...")
 
 terminated = False
 truncated = False
-idle_action = 0 # Assuming 0 is idle
 
 sim_pbar = tqdm(range(max_steps_sim), desc="Simulating Episode", unit="step")
 
 for step in sim_pbar:
-    if terminated or truncated: break
+    if terminated or truncated:
+        break
 
-    # 1. Render current state and store frame
+    # 1. Render current state and store frame (BEFORE step)
     try:
-        # Render before taking the step
+        # Render using the environment's forced 'rgb_array' mode
         frame = env.render(mode='rgb_array')
         if frame is None:
-             print(f"Warning: env.render returned None at step {env.time}. Skipping frame.")
+             logger.warning(f"env.render returned None at step {env.time}. Skipping frame.")
         else:
             frames.append(frame)
     except Exception as e:
-        print(f"\nError during env.render: {e}. Stopping GIF generation.")
-        if env: env.close();
+        logger.error(f"\nError during env.render at step {env.time}: {e}. Stopping GIF generation.", exc_info=True)
+        if env: env.close()
         sys.exit(1)
 
     # 2. Prepare observation for model
     try:
         current_fov_np = obs["fov"]
         current_gso_np = obs["adj_matrix"]
+        # Add batch dimension (B=1)
         fov_tensor = torch.from_numpy(current_fov_np).float().unsqueeze(0).to(config["device"])
         gso_tensor = torch.from_numpy(current_gso_np).float().unsqueeze(0).to(config["device"])
     except KeyError as e:
-        print(f"Error: Missing key {e} in observation dict at step {env.time}. Keys: {obs.keys()}")
-        if env: env.close();
+        logger.error(f"Error: Missing key {e} in observation dict at step {env.time}. Keys: {list(obs.keys())}")
+        if env: env.close()
         sys.exit(1)
     except Exception as e:
-         print(f"Error processing observation: {e}")
-         if env: env.close();
+         logger.error(f"Error processing observation at step {env.time}: {e}", exc_info=True)
+         if env: env.close()
          sys.exit(1)
 
     # 3. Get action from model
     with torch.no_grad():
         try:
             if net_type == 'gnn':
-                action_scores = model(fov_tensor, gso_tensor)
+                action_scores = model(fov_tensor, gso_tensor) # Shape (B, N, A)
             else: # baseline
-                action_scores = model(fov_tensor)
+                action_scores = model(fov_tensor) # Shape (B, N, A)
+            # Get actions for the single batch item -> Shape (N,)
             proposed_actions = action_scores.argmax(dim=-1).squeeze(0).cpu().numpy()
         except Exception as e:
-             print(f"Error during model forward pass: {e}")
-             if env: env.close();
+             logger.error(f"Error during model forward pass at step {env.time}: {e}", exc_info=True)
+             if env: env.close()
              sys.exit(1)
 
-    # 4. Apply Collision Shielding
-    shielded_actions = proposed_actions.copy()
-    current_pos_y = env.positionY.copy()
-    current_pos_x = env.positionX.copy()
-    next_pos_y = current_pos_y.copy()
-    next_pos_x = current_pos_x.copy()
-    needs_shielding = np.zeros(env.nb_agents, dtype=bool)
-    active_mask = ~env.reached_goal
+    # 4. --- NO EXTERNAL COLLISION SHIELDING HERE ---
+    # The environment's step function will handle collisions.
 
-    # Calc proposed positions
-    for agent_id in np.where(active_mask)[0]:
-         act = proposed_actions[agent_id]
-         dy, dx = env.action_map_dy_dx.get(act, (0,0)) # Default to idle
-         next_pos_y[agent_id] += dy
-         next_pos_x[agent_id] += dx
-    # Clamp boundaries
-    next_pos_y[active_mask] = np.clip(next_pos_y[active_mask], 0, env.board_rows - 1)
-    next_pos_x[active_mask] = np.clip(next_pos_x[active_mask], 0, env.board_cols - 1)
-
-    # Check Obstacle Collisions
-    if env.obstacles.size > 0:
-        active_indices = np.where(active_mask)[0]
-        if len(active_indices) > 0:
-            proposed_coords_active = np.stack([next_pos_y[active_indices], next_pos_x[active_indices]], axis=1)
-            obs_coll_active_mask = np.any(np.all(proposed_coords_active[:, np.newaxis, :] == env.obstacles[np.newaxis, :, :], axis=2), axis=1)
-            colliding_agent_indices = active_indices[obs_coll_active_mask]
-            if colliding_agent_indices.size > 0:
-                shielded_actions[colliding_agent_indices] = idle_action
-                needs_shielding[colliding_agent_indices] = True
-                next_pos_y[colliding_agent_indices] = current_pos_y[colliding_agent_indices]
-                next_pos_x[colliding_agent_indices] = current_pos_x[colliding_agent_indices]
-                active_mask[colliding_agent_indices] = False # Mark inactive for agent-agent
-
-    # Check Agent-Agent Collisions
-    active_indices = np.where(active_mask)[0]
-    if len(active_indices) > 1:
-        next_coords_check = np.stack([next_pos_y[active_indices], next_pos_x[active_indices]], axis=1)
-        current_coords_check = np.stack([current_pos_y[active_indices], current_pos_x[active_indices]], axis=1)
-        # Vertex
-        unique_coords, unique_map, counts = np.unique(next_coords_check, axis=0, return_inverse=True, return_counts=True)
-        vertex_collision_agents = active_indices[np.isin(unique_map, np.where(counts > 1)[0])]
-        # Edge
-        swapping_agents_list = []
-        rel_idx = np.arange(len(active_indices))
-        for i in rel_idx:
-             for j in range(i + 1, len(active_indices)):
-                 if np.array_equal(next_coords_check[i], current_coords_check[j]) and np.array_equal(next_coords_check[j], current_coords_check[i]):
-                     swapping_agents_list.extend([active_indices[i], active_indices[j]])
-        swapping_collision_agents = np.unique(swapping_agents_list)
-        # Shield
-        agents_to_shield_idx = np.unique(np.concatenate([vertex_collision_agents, swapping_collision_agents]))
-        if agents_to_shield_idx.size > 0:
-            shielded_actions[agents_to_shield_idx] = idle_action
-            # needs_shielding[agents_to_shield_idx] = True # Update if needed
-
-    # 5. Step the environment *with shielded actions*
+    # 5. Step the environment *with raw model actions*
     try:
-        obs, reward, terminated, truncated, info = env.step(shielded_actions)
-        # Check truncation based on simulation step limit
-        truncated = truncated or (step >= max_steps_sim - 1)
+        # Use proposed_actions directly
+        obs, reward, terminated, truncated_env, info = env.step(proposed_actions)
+        # Update truncation flag also based on env time vs max_steps_sim
+        truncated = truncated or truncated_env or (env.time >= max_steps_sim)
     except Exception as e:
-        print(f"\nError during env.step: {e}")
-        if env: env.close();
+        logger.error(f"\nError during env.step at time {env.time}: {e}", exc_info=True)
+        if env: env.close()
         sys.exit(1)
 
-    sim_pbar.set_postfix({"Term": terminated, "Trunc": truncated, "AtGoal": info['agents_at_goal'].sum(), "Step": env.time})
+    # Update progress bar description
+    sim_pbar.set_postfix({
+        "Term": terminated,
+        "Trunc": truncated,
+        "AtGoal": info.get('agents_at_goal', np.array([])).sum(), # Use .get for safety
+        "Step": env.time
+    })
 
 # --- End Simulation Loop ---
 sim_pbar.close()
 
-# Capture the final frame if episode finished
+# Capture the final frame if episode finished or truncated
 if terminated or truncated:
+    logger.info(f"Simulation ended. Terminated={terminated}, Truncated={truncated}, Final Step={env.time}")
     try:
         final_frame = env.render(mode='rgb_array')
         if final_frame is not None:
              frames.append(final_frame)
+             logger.info("Appended final frame.")
         else:
-             print("Warning: Could not render final frame.")
+             logger.warning("Could not render final frame (returned None).")
     except Exception as e:
-        print(f"Warning: Error rendering final frame: {e}")
+        logger.warning(f"Error rendering final frame: {e}", exc_info=True)
 
-if env: env.close()
+if env:
+    env.close()
+    logger.info("Environment closed.")
 
 # --- Save Frames as GIF ---
-output_gif_path = Path(args.output_gif)
+output_gif_path = Path(args.output_gif).resolve() # Get absolute path
 if frames:
-    print(f"\nSaving {len(frames)} frames to {output_gif_path}...")
+    logger.info(f"\nSaving {len(frames)} frames to {output_gif_path}...")
     try:
         # imageio v3 syntax: duration is per frame in milliseconds
-        imageio.mimsave(output_gif_path, frames, duration=args.gif_duration*1000, loop=0)
+        imageio.mimsave(output_gif_path, frames, duration=int(args.gif_duration * 1000), loop=0)
         # # imageio v2 syntax: duration is per frame in seconds
         # imageio.mimsave(output_gif_path, frames, duration=args.gif_duration, loop=0)
-        print(f"GIF saved successfully to {output_gif_path.resolve()}")
+        logger.info(f"GIF saved successfully to {output_gif_path}")
     except ImportError:
-         print("\nError: `imageio` library not found. Cannot save GIF.")
-         print("Install using: pip install imageio")
+         logger.error("\nError: `imageio` library not found. Cannot save GIF.")
+         logger.error("Install using: pip install imageio")
     except Exception as e:
-        print(f"\nError saving GIF: {e}")
-        print("Ensure imageio is installed (`pip install imageio`).")
-        print("You might need ffmpeg for some formats (`pip install imageio[ffmpeg]`).")
+        logger.error(f"\nError saving GIF: {e}", exc_info=True)
+        logger.error("Ensure imageio is installed (`pip install imageio`).")
+        logger.error("You might need ffmpeg for some formats (`pip install imageio[ffmpeg]`).")
 else:
-    print("\nNo frames were captured. Cannot create GIF.")
+    logger.warning("\nNo frames were captured. Cannot create GIF.")
 
-print("\nScript finished.")
+logger.info("\nScript finished.")

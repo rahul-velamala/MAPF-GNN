@@ -1,102 +1,123 @@
 # File: models/framework_baseline.py
-# (Modified: Removed inplace=True from ReLUs)
+# (Revised: Removed inplace=True from ReLUs, added logging)
 
 import torch
 import torch.nn as nn
-from .networks.utils_weights import weights_init
-from copy import copy
+import logging
 import numpy as np
 
+from .networks.utils_weights import weights_init
+
+logger = logging.getLogger(__name__)
+
 class Network(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config: dict):
         super().__init__()
         self.config = config
-        self.num_agents = self.config["num_agents"] # Not strictly needed for forward, but good for consistency
+        required_keys = ["num_agents", "pad", "channels", "encoder_layers",
+                         "encoder_dims", "action_layers"]
+        for key in required_keys:
+            if key not in config:
+                raise ValueError(f"Config missing required key for Framework Baseline: '{key}'")
 
-        # --- Determine FOV size ---
-        pad = self.config.get("pad", 3)
-        self.fov_size = (pad * 2) - 1
-        print(f"Framework Baseline: Using FOV size {self.fov_size}x{self.fov_size} (pad={pad})")
-
+        self.num_agents = int(config["num_agents"])
         self.num_actions = 5
 
-        # --- MLP Encoder Config ---
-        dim_encoder_mlp = self.config["encoder_layers"]
-        self.compress_Features_dim = self.config["encoder_dims"]
+        # --- Determine FOV size ---
+        self.pad = int(config["pad"])
+        if self.pad <= 0: raise ValueError("'pad' must be >= 1")
+        self.fov_size = (self.pad * 2) - 1
+        logger.info(f"Framework Baseline: Using FOV size {self.fov_size}x{self.fov_size} (pad={self.pad})")
 
-        # --- Action MLP Config ---
-        dim_action_mlp = self.config["action_layers"]
-        action_features_out = [self.num_actions]
+        # --- Model Config ---
+        self.cnn_input_channels = 3 # FOV: (Obstacles/Agents, Goal, Self)
+        cnn_channels = [self.cnn_input_channels] + config["channels"]
+        num_conv_layers = len(cnn_channels) - 1
+        cnn_strides = config.get("strides", [1] * num_conv_layers)
+        cnn_kernels = config.get("kernels", [3] * num_conv_layers)
+        cnn_paddings = config.get("paddings", [1] * num_conv_layers)
+
+        if not (len(cnn_strides) == len(cnn_kernels) == len(cnn_paddings) == num_conv_layers):
+            raise ValueError("Length of CNN 'strides'/'kernels'/'paddings' doesn't match 'channels'.")
+
+        mlp_encoder_layers_count = int(config["encoder_layers"])
+        mlp_encoder_dims = config["encoder_dims"]
+
+        action_mlp_layers_count = int(config["action_layers"])
+        action_mlp_output_dim = self.num_actions
 
         ############################################################
-        # CNN Encoder (Input: Agent FOV)
+        # 1. CNN Encoder
         ############################################################
-        cnn_input_channels = 3 # Expects: Obstacles/Agents, Goal, Self
-        channels = [cnn_input_channels] + self.config["channels"]
-        num_conv_layers = len(channels) - 1
-        strides = self.config.get("strides", [1] * num_conv_layers)
-        padding_size = self.config.get("padding", [1] * num_conv_layers)
-        filter_taps = self.config.get("kernels", [3] * num_conv_layers)
-
-        if not (len(strides) == len(padding_size) == len(filter_taps) == num_conv_layers):
-             raise ValueError("CNN layer parameter lengths mismatch")
-
-        conv_layers = []
+        conv_layers_list = []
         H_out, W_out = self.fov_size, self.fov_size
-        for l in range(num_conv_layers):
-            conv_layers.append(nn.Conv2d(channels[l], channels[l + 1], filter_taps[l], strides[l], padding_size[l], bias=True))
-            conv_layers.append(nn.BatchNorm2d(num_features=channels[l + 1]))
-            # --- MODIFICATION: Removed inplace=True ---
-            conv_layers.append(nn.ReLU(inplace=False))
-            H_out = int((H_out + 2 * padding_size[l] - filter_taps[l]) / strides[l]) + 1
-            W_out = int((W_out + 2 * padding_size[l] - filter_taps[l]) / strides[l]) + 1
-
-        self.convLayers = nn.Sequential(*conv_layers)
-        self.cnn_flat_feature_dim = channels[-1] * H_out * W_out
-        print(f"Framework Baseline: CNN output feature dim calculated: {self.cnn_flat_feature_dim}")
+        current_channels = self.cnn_input_channels
+        logger.info("Building CNN:")
+        for i in range(num_conv_layers):
+            out_channels = cnn_channels[i+1]
+            kernel, stride, padding = cnn_kernels[i], cnn_strides[i], cnn_paddings[i]
+            logger.info(f"  Layer {i}: Conv2d({current_channels}, {out_channels}, k={kernel}, s={stride}, p={padding}) -> ReLU")
+            conv_layers_list.append(nn.Conv2d(current_channels, out_channels, kernel, stride, padding, bias=True))
+            # Optional BatchNorm: nn.BatchNorm2d(out_channels)
+            conv_layers_list.append(nn.ReLU(inplace=False)) # Use inplace=False
+            H_out = int((H_out + 2 * padding - kernel) / stride) + 1
+            W_out = int((W_out + 2 * padding - kernel) / stride) + 1
+            current_channels = out_channels
+        self.convLayers = nn.Sequential(*conv_layers_list)
+        self.cnn_flat_feature_dim = current_channels * H_out * W_out
+        logger.info(f"CNN Output: H={H_out}, W={W_out}, C={current_channels}, FlatDim={self.cnn_flat_feature_dim}")
 
         ############################################################
-        # MLP Encoder (Input: Flattened CNN Features)
+        # 2. MLP Encoder
         ############################################################
-        mlp_encoder_input_dim_config = self.config.get("last_convs", [self.cnn_flat_feature_dim])[0]
-        if mlp_encoder_input_dim_config != self.cnn_flat_feature_dim:
-            print(f"Framework Baseline WARNING: Config 'last_convs' mismatch. Using calculated value.")
+        config_cnn_flat_dim = config.get("last_convs", [self.cnn_flat_feature_dim])[0]
+        if config_cnn_flat_dim != self.cnn_flat_feature_dim:
+             logger.warning(f"Config 'last_convs' ({config_cnn_flat_dim}) mismatch with calculated CNN flat dim ({self.cnn_flat_feature_dim}). Using calculated value.")
         mlp_encoder_input_dim = self.cnn_flat_feature_dim
 
-        mlp_encoder_dims = [mlp_encoder_input_dim] + self.compress_Features_dim
+        if len(mlp_encoder_dims) != mlp_encoder_layers_count:
+            raise ValueError(f"MLP Encoder 'encoder_dims' length ({len(mlp_encoder_dims)}) must match 'encoder_layers' count ({mlp_encoder_layers_count}).")
+        mlp_encoder_full_dims = [mlp_encoder_input_dim] + mlp_encoder_dims
 
-        mlp_encoder_layers = []
-        for l in range(dim_encoder_mlp):
-            mlp_encoder_layers.append(nn.Linear(mlp_encoder_dims[l], mlp_encoder_dims[l+1]))
-            # --- MODIFICATION: Removed inplace=True ---
-            mlp_encoder_layers.append(nn.ReLU(inplace=False)) # Apply activation
-
-        self.compressMLP = nn.Sequential(*mlp_encoder_layers)
-        # Feature dimension after MLP encoder (input to Action MLP)
-        self.action_mlp_input_dim = mlp_encoder_dims[-1]
-        print(f"Framework Baseline: MLP Encoder output dim (Action MLP input): {self.action_mlp_input_dim}")
-
+        mlp_encoder_list = []
+        logger.info("Building MLP Encoder:")
+        for i in range(mlp_encoder_layers_count):
+            in_dim, out_dim = mlp_encoder_full_dims[i], mlp_encoder_full_dims[i+1]
+            logger.info(f"  Layer {i}: Linear({in_dim}, {out_dim}) -> ReLU")
+            mlp_encoder_list.append(nn.Linear(in_dim, out_dim))
+            mlp_encoder_list.append(nn.ReLU(inplace=False)) # Use inplace=False
+        self.compressMLP = nn.Sequential(*mlp_encoder_list)
+        self.action_mlp_input_dim = mlp_encoder_full_dims[-1]
+        logger.info(f"MLP Encoder Output Dim (Action MLP input): {self.action_mlp_input_dim}")
 
         ############################################################
-        # MLP Action Policy (Input: Features after MLP Encoder)
+        # 3. MLP Action Policy
         ############################################################
-        action_mlp_dims = [self.action_mlp_input_dim] + action_features_out
+        if action_mlp_layers_count == 1:
+             action_mlp_full_dims = [self.action_mlp_input_dim, action_mlp_output_dim]
+        elif action_mlp_layers_count > 1:
+             action_mlp_hidden_dims = config.get("action_hidden_dims", [self.action_mlp_input_dim]) # Example hidden dim
+             hidden_dim = action_mlp_hidden_dims[0]
+             action_mlp_full_dims = [self.action_mlp_input_dim] + [hidden_dim] * (action_mlp_layers_count - 1) + [action_mlp_output_dim]
+        else: raise ValueError("action_layers must be >= 1")
 
-        action_mlp_layers = []
-        for l in range(dim_action_mlp):
-            action_mlp_layers.append(nn.Linear(action_mlp_dims[l], action_mlp_dims[l+1]))
-            if l < dim_action_mlp - 1: # Add ReLU except after last layer
-                # --- MODIFICATION: Removed inplace=True ---
-                action_mlp_layers.append(nn.ReLU(inplace=False))
+        action_mlp_list = []
+        logger.info("Building Action MLP:")
+        for i in range(action_mlp_layers_count):
+            in_dim, out_dim = action_mlp_full_dims[i], action_mlp_full_dims[i+1]
+            is_last_layer = (i == action_mlp_layers_count - 1)
+            logger.info(f"  Layer {i}: Linear({in_dim}, {out_dim})" + ("" if is_last_layer else " -> ReLU"))
+            action_mlp_list.append(nn.Linear(in_dim, out_dim))
+            if not is_last_layer:
+                action_mlp_list.append(nn.ReLU(inplace=False)) # Use inplace=False
+        self.actionMLP = nn.Sequential(*action_mlp_list)
+        logger.info(f"Action MLP Output Dim: {action_mlp_output_dim}")
 
-        self.actionMLP = nn.Sequential(*action_mlp_layers)
-
-        # Initialize weights
+        logger.info("Applying weight initialization...")
         self.apply(weights_init)
-        print("Framework Baseline: Model initialized.")
+        logger.info("--- Framework Baseline Initialization Complete ---")
 
-
-    def forward(self, states): # Baseline doesn't use GSO
+    def forward(self, states: torch.Tensor) -> torch.Tensor:
         """
         Forward pass for the baseline model (CNN -> MLP -> ActionMLP).
         Args:
@@ -105,15 +126,20 @@ class Network(nn.Module):
             Tensor: Action logits, shape [B, N, A]
         """
         batch_size = states.shape[0]
-        expected_state_shape = (self.num_agents, 3, self.fov_size, self.fov_size)
-        if states.shape[1:] != expected_state_shape:
-            raise ValueError(f"Input states shape error. Expected [B, {self.num_agents}, 3, {self.fov_size}, {self.fov_size}], "
-                             f"Got {states.shape}")
+        N = states.shape[1]
+        if N != self.num_agents: logger.warning(f"Input N={N} != config num_agents={self.num_agents}")
+
+        expected_state_shape_suffix = (self.cnn_input_channels, self.fov_size, self.fov_size)
+        if states.shape[2:] != expected_state_shape_suffix:
+            raise ValueError(f"Input states shape error. Expected suffix {expected_state_shape_suffix}, got {states.shape[2:]}")
 
         # 1. CNN Encoder
-        states_reshaped = states.reshape(batch_size * self.num_agents, 3, self.fov_size, self.fov_size)
+        # Reshape: (B, N, C, H, W) -> (B*N, C, H, W)
+        states_reshaped = states.reshape(batch_size * N, self.cnn_input_channels, self.fov_size, self.fov_size)
         cnn_features = self.convLayers(states_reshaped)
-        cnn_features_flat = cnn_features.view(batch_size * self.num_agents, -1)
+        cnn_features_flat = cnn_features.view(batch_size * N, -1) # Shape: [B*N, cnn_flat_dim]
+        if cnn_features_flat.shape[1] != self.cnn_flat_feature_dim:
+             raise RuntimeError(f"CNN flattened feature dimension mismatch.")
 
         # 2. MLP Encoder
         encoded_features = self.compressMLP(cnn_features_flat) # Shape [B*N, action_mlp_input_dim]
@@ -122,6 +148,6 @@ class Network(nn.Module):
         action_logits_flat = self.actionMLP(encoded_features) # Shape [B*N, num_actions]
 
         # Reshape back to per-agent logits: [B*N, num_actions] -> [B, N, num_actions]
-        action_logits = action_logits_flat.view(batch_size, self.num_agents, self.num_actions)
+        action_logits = action_logits_flat.view(batch_size, N, self.num_actions)
 
         return action_logits
