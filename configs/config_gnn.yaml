@@ -2,7 +2,7 @@
 
 # Experiment Name / Output Directory (within results/)
 # !!! IMPORTANT: CHANGE 'exp_name' for each new training run !!!
-exp_name: 'gnn_large_dataset_with_adc1' # e.g., gnn_5_8_28_p3_k3_dagger_run1
+exp_name: 'gnn_large_dataset_with_adc' # e.g., gnn_5_8_28_p3_k3_dagger_run1
 
 # --- Model Architecture (GNN Specific) ---
 # CNN (Input: FOV - defined by 'pad' below)
@@ -83,4 +83,4 @@ valid:
     min_time: 5             # Min trajectory length (T) for validation samples.
     max_time_dl: 80         # Max trajectory length (T) for validation samples. Should be <= max_time.
     # --- Consistency Check ---
-    nb_agents: 5            # Number of agents in the dataset files. MUST match global 'num_agents'.  
+    nb_agents: 5            # Number of agents in the dataset files. MUST match global 'num_agents'.

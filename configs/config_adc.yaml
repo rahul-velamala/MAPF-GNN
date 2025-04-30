@@ -1,92 +1,74 @@
 # File: configs/config_adc.yaml
-# Configuration for training with the Adaptive Diffusion Convolution (ADC) Layer
+# Configuration for training ADC on the IROS2020 N=10 dataset format
 
 # Experiment Name / Output Directory (within results/)
-# !!! CHANGE 'exp_name' for each new training run !!!
-exp_name: 'adc_k10_5_8_28_run2' # Example: adc_Kvalue_Agent_Obst_Size_Run#
+exp_name: 'adc_k10_N10_P6_IROS_Data' # Updated Name
 
 # --- Model Architecture ---
 # CNN (Input: FOV)
 channels: [16, 16, 16]      # Output channels of CNN layers. Input is 3 channels.
-strides: [1, 1, 1]           # Stride for each CNN layer. Length MUST match len(channels).
-kernels: [3, 3, 3]           # Kernel size for each CNN layer. Length MUST match len(channels).
-paddings: [1, 1, 1]          # Padding for each CNN layer. Length MUST match len(channels).
+strides: [1, 1, 1]           # Stride for each CNN layer.
+kernels: [3, 3, 3]           # Kernel size for each CNN layer.
+paddings: [1, 1, 1]          # Padding for Conv2d layers (internal to CNN).
 
 # Encoder MLP (after CNN flatten)
-encoder_layers: 1            # Number of layers in the MLP after CNN.
-# last_convs: [400]          # Optional: Expected flattened dim after CNN. Framework calculates this.
-encoder_dims: [64]           # Output dimension(s) of encoder MLP. Length must match encoder_layers.
+encoder_layers: 1
+encoder_dims: [64]
 
 # GNN - ADC Specific Settings
-net_type: 'gnn'              # Load the GNN framework (framework_gnn.py)
-msg_type: 'adc'              # Specify ADC layer type for dynamic loading
-graph_filters: [10]          # Truncation order K for ADC layer(s). Length = num GNN layers. Paper suggests K=10.
-node_dims: [128]             # Output dimension of ADC layer(s). Length must match len(graph_filters).
+net_type: 'gnn'
+msg_type: 'adc'
+graph_filters: [10]          # Truncation order K for ADC layer(s).
+node_dims: [128]             # Output dimension of ADC layer(s).
 # Optional ADC Layer parameters (using defaults in ADCLayer if omitted):
-# adc_initial_t: 1.0         # Initial diffusion time 't'
-# adc_train_t: True          # Make 't' learnable
+# adc_initial_t: 1.0
+# adc_train_t: True
 
 # Policy MLP (after GNN/ADC)
-action_layers: 1             # Number of layers in the action MLP. 1 means GNN/ADC Output -> num_actions.
-# action_hidden_dims: [64]   # Optional: Specify hidden layer sizes if action_layers > 1.
+action_layers: 1
 
 # --- Training Hyperparameters ---
-epochs: 10                  # Number of training epochs. ADC might need more.
-learning_rate: 3e-4          # Adam learning rate. May need tuning for ADC.
-weight_decay: 1e-4           # Adam weight decay (L2 regularization).
-batch_size: 128              # Number of samples (timesteps) per batch.
-num_workers: 0               # DataLoader workers. Start with 0 for debugging.
-eval_frequency: 5            # Evaluate model performance every N epochs.
+epochs: 50                   # Adjust as needed, ADC might need more than GCN
+learning_rate: 3e-4
+weight_decay: 1e-4
+batch_size: 128              # Adjust based on GPU memory
+num_workers: 0               # Start with 0 for debugging data loading
+eval_frequency: 5
 
 # --- Online Expert (DAgger) ---
-# Recommended to keep enabled for ADC. Set frequency_epochs > 0.
-# To disable completely, use the --oe_disable flag when running train.py.
-online_expert:
-  frequency_epochs: 4        # Run OE data aggregation every N epochs (after epoch 0).
-  num_cases_to_run: 500      # How many original training cases to check for deadlocks each OE run.
-  cbs_timeout_seconds: 15    # Max time for CBS expert. Might need >10s for 28x28.
+# OE is DISABLED in train.py when using MatDataset. This section is ignored.
+# online_expert:
+#   frequency_epochs: 4
+#   num_cases_to_run: 500
+#   cbs_timeout_seconds: 15
 
 # --- Evaluation ---
-# Parameters for evaluation runs performed *during* training.
-tests_episodes: 100          # Number of random episodes per evaluation phase.
-# Optional overrides for evaluation environment parameters:
-# eval_max_steps: 120
-# eval_board_size: [28, 28]
-# eval_obstacles: 8
-# eval_num_agents: 5
-# eval_sensing_range: 4
-# eval_pad: 3
+tests_episodes: 50           # Number of random episodes per evaluation phase
+eval_board_size: [20, 20]    # Use same board size as training data for eval
+eval_obstacles: 40           # Use similar obstacle count as training data (~10%)
+eval_max_steps: 500        # Optional override, defaults to max_steps
 
 # --- Environment & Simulation Parameters ---
-# !!! IMPORTANT: These MUST match the parameters used to generate the dataset !!!
-num_agents: 5                # Number of agents. MUST match dataset.
-board_size: [28, 28]         # Grid dimensions [rows, cols]. MUST match dataset.
-obstacles: 8                 # Number of obstacles. MUST match dataset.
-pad: 3                       # Padding for FOV. MUST match dataset. Determines fov_size.
-map_shape: [5, 5]            # FOV dimensions [H, W]. MUST equal [2*pad-1, 2*pad-1].
-sensing_range: 4             # Agent communication range for GSO. MUST match dataset assumption if GSO used.
-max_time: 120                # Max steps in env simulation (used for truncation). Should be >= max_time_dl.
-max_steps: 120               # Max steps limit for *evaluation* episodes (if eval_max_steps not set).
-max_steps_train_inference: 180 # Timeout (steps) for OE inference runs. Should be > max_time.
+# !!! THESE MUST MATCH THE DATA IN THE .MAT FILES !!!
+num_agents: 10               # <<<--- CORRECTED based on .mat data
+pad: 6                       # <<<--- CORRECTED based on .mat FOV shape (11x11)
+map_shape: [11, 11]          # <<<--- CORRECTED derived from pad=6
+
+# Parameters matching environment context of .mat data
+board_size: [20, 20]         # <<<--- CORRECTED based on .mat map shape
+sensing_range: 5             # <<<--- ASSUMED based on paper (r_comm=5)
+max_time: 500                # Max sim time for eval env (adjust as needed)
+max_steps: 500               # Alias for max_time
 
 # --- Data Loading ---
-# Settings for the DataLoader (see data_loader.py)
+# !!! POINT THESE TO YOUR .MAT FILE DIRECTORIES !!!
 train:
-    # !!! IMPORTANT: Set correct path to your CLEANED training data !!!
-    root_dir: 'dataset/5_8_28_fov5_parallel_large/train' # <<<--- UPDATE PATH ---<<<
-    mode: 'train'
-    # --- Filters applied by DataLoader ---
-    min_time: 5                # Min trajectory length (T) for training samples.
-    max_time_dl: 80            # Max trajectory length (T) for training samples. Adjust based on data.
-    # --- Consistency Check ---
-    nb_agents: 5               # Agents in dataset files. MUST match global 'num_agents'.
+    root_dir: 'dataset/IROS_N10_P6_Converted/train' # <<<--- VERIFY PATH
+    # Other keys like mode, min/max_time, nb_agents are ignored by MatDataLoader
 
 valid:
-    # !!! IMPORTANT: Set correct path to your CLEANED validation data !!!
-    root_dir: 'dataset/5_8_28_fov5_parallel_large/val'   # <<<--- UPDATE PATH ---<<<
-    mode: 'valid'
-    # --- Filters applied by DataLoader ---
-    min_time: 5                # Min trajectory length (T) for validation samples.
-    max_time_dl: 80            # Max trajectory length (T) for validation samples. Adjust based on data.
-    # --- Consistency Check ---
-    nb_agents: 5               # Agents in dataset files. MUST match global 'num_agents'.
+    root_dir: 'dataset/IROS_N10_P6_Converted/valid' # <<<--- VERIFY PATH
+    # Other keys like mode, min/max_time, nb_agents are ignored by MatDataLoader
+
+# test: # Optional: configure test set path if needed later
+#    root_dir: '/path/to/your/mat/test/folder'

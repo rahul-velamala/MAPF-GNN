@@ -140,14 +140,9 @@ class Network(nn.Module):
                 "bias": True,
             }
             # Add ADC specific args if needed
-            # <<< --- MODIFICATION HERE --- >>>
-            # Change this line:
-            # if GNNLayerClass == ADCLayer:
-            # To this:
-            if msg_type == 'adc':
+            if GNNLayerClass == ADCLayer:
                  layer_args["initial_t"] = config.get("adc_initial_t", 1.0)
                  layer_args["train_t"] = config.get("adc_train_t", True)
-            # <<< --- END MODIFICATION --- >>>
 
             logger.info(f"  Layer {i}: {GNNLayerClass.__name__}(in={in_dim}, out={out_dim}, {k_arg_name}={k_value}) -> ReLU")
             gnn_layers_list.append( GNNLayerClass(**layer_args) )
@@ -156,8 +151,6 @@ class Network(nn.Module):
         self.GNNLayers = nn.ModuleList(gnn_layers_list) # Use ModuleList
         self.action_mlp_input_dim = gnn_feature_dims[-1]
         logger.info(f"GNN Output Dim (Action MLP Input Dim): {self.action_mlp_input_dim}")
-
-        # ... (rest of the __init__ method) ...
 
         ############################################################
         # 4. MLP Action Policy

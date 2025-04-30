@@ -151,3 +151,4 @@ class Network(nn.Module):
         action_logits = action_logits_flat.view(batch_size, N, self.num_actions)
 
         return action_logits
+

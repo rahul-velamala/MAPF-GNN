@@ -3,7 +3,7 @@ import numpy as np
 from pathlib import Path
 
 # --- SET PATH TO ONE .mat FILE ---
-mat_file_path = Path('/scratch/rahul/v1/project/MAPF-GNN-ADC/dataset/DataSource_DMap_FixedComR/EffectiveDensity/Training/map20x20_density_p1/10_Agent/train/train_IDMap00000_IDCase00000_MP29.mat') # Example path
+mat_file_path = Path('dataset/DataSource_DMap_FixedComR/EffectiveDensity/Training/map20x20_density_p1/10_Agent/valid/valid_IDMap00800_IDCase00000_MP26.mat') # Example path
 
 if not mat_file_path.is_file():
     print(f"Error: File not found at {mat_file_path}")

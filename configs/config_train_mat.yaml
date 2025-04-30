@@ -1,75 +1,82 @@
-# File: configs/config_train_mat.yaml
-# Example config for training using the .mat dataset format
+# File: configs/config_gnn.yaml
+# (MODIFIED for Proroklab Dataset - 10 agents, 11x11 FOV, 20x20 map)
 
 # Experiment Name / Output Directory (within results/)
-exp_name: 'gnn_train_on_mat_N10_P6' # <<< CHANGE NAME (N10=Agents, P6=Pad if FOV 11x11)
+# !!! CHANGE 'exp_name' for each new training run !!!
+exp_name: 'gnn_proroklab_10A_20M_p6_K3_run1' # Example name
 
 # --- Model Architecture ---
-# !!! Ensure these match the model you want to train !!!
-net_type: 'gnn'      # 'gnn' or 'baseline'
-msg_type: 'gcn'      # GNN type if net_type='gnn' (e.g., 'gcn', 'adc')
+# CNN (Input: FOV - defined by 'pad' below)
+channels: [32, 64, 64]    # Example CNN channels - MAY NEED ADJUSTMENT based on 11x11 input
+strides: [1, 2, 1]         # Example strides
+kernels: [3, 3, 3]         # Example kernels
+paddings: [1, 1, 1]        # Example paddings
+                          # (Ensure these CNN params work with 11x11 input -> check framework_*.py logs)
 
-channels: [16, 16, 16]
-strides: [1, 1, 1]
-kernels: [3, 3, 3]
-paddings: [1, 1, 1] # Padding for Conv layers, NOT the FOV pad
-
+# Encoder MLP (after CNN flatten)
 encoder_layers: 1
-encoder_dims: [64]
+encoder_dims: [128]        # Example encoder dim
 
-# --- GNN Specific (ignored if net_type='baseline') ---
-# Example for GCN K=3
-graph_filters: [3]
-node_dims: [128]
-# Example for ADC K=10
-# graph_filters: [10]
-# node_dims: [128]
-# initial_t: 1.0 # Optional for ADC
-# train_t: True # Optional for ADC
+# GNN
+graph_filters: [3]         # K value for GNN layers
+node_dims: [128]           # Output dim of GNN layers
+msg_type: 'gcn'            # 'gcn', 'message', or 'adc'
 
+# Policy MLP (after GNN)
 action_layers: 1
-# action_hidden_dims: [] # Only needed if action_layers > 1
+# action_hidden_dims: [64] # Optional
 
 # --- Training Hyperparameters ---
-epochs: 50                # Number of training epochs
-learning_rate: 3e-4       # Adam learning rate
-weight_decay: 1e-4        # Adam weight decay
-batch_size: 128           # Number of samples (timesteps) per batch
-num_workers: 0            # DataLoader workers (0 for debug, increase later)
-eval_frequency: 5         # Evaluate model performance every N epochs
+epochs: 50                 # Adjust as needed
+learning_rate: 0.001       # Proroklab used 0.001
+weight_decay: 0.00001      # Proroklab used 1e-5
+batch_size: 64             # Proroklab used 64
+num_workers: 4             # Adjust based on your system (start with 0 or 2)
+eval_frequency: 5
+net_type: 'gnn'            # Keep as 'gnn' (or 'baseline' if using that config)
+
+# --- Online Expert (DAgger) ---
+# !!! DISABLED for Proroklab dataset integration !!!
+# online_expert:
+#   frequency_epochs: 4
+#   num_cases_to_run: 500
+#   cbs_timeout_seconds: 10
 
 # --- Evaluation ---
-# Parameters for evaluation runs performed *during* training
-tests_episodes: 50        # Number of random episodes per evaluation phase
-# eval_max_steps: 120     # Optional override (defaults to max_steps)
-# These should generally match the *training* data config unless testing generalization
+tests_episodes: 100        # Number of random episodes for evaluation during training
+eval_max_steps: 100      # Max steps for these eval episodes (defaults to max_steps)
+# Optional overrides for eval environment (will use global values if not set)
 eval_board_size: [20, 20]
+eval_num_agents: 10
+eval_pad: 6
 eval_obstacles: 40
-# eval_num_agents: 10     # Will use num_agents_config from above
-# eval_sensing_range: 5
-# eval_pad: 6             # Will use pad_config from above
 
 # --- Environment & Simulation Parameters ---
-# !!! THESE MUST MATCH THE DATA IN THE .MAT FILES !!!
-num_agents: 10            # <<<--- MATCH .mat DATA 'N' (e.g., 10)
-pad: 6                    # <<<--- MATCH .mat DATA 'H'/'W' (e.g., pad=6 for 11x11)
-map_shape: [11, 11]       # <<<--- MUST BE [2*pad-1, 2*pad-1]
-
-# These are less critical for loading but define the eval env behavior
-board_size: [20, 20]      # Board size the agents *operated in* for the dataset
-sensing_range: 5          # Communication range used for GSO in dataset
-max_time: 150             # Max sim time for eval env (used for truncation)
-max_steps: 150            # Alias for max_time if eval_max_steps not set
+# !!! MUST match parameters used for Proroklab dataset generation/format !!!
+num_agents: 10             # Number of agents in the dataset .mat files
+board_size: [20, 20]       # Map dimensions [rows, cols] from dataset generation
+obstacles: 40
+pad: 6                     # Padding for FOV. Use 6 for 11x11, 3 for 5x5. MUST MATCH DATA.
+map_shape: [11, 11]        # FOV dimensions [H, W]. MUST equal [2*pad-1, 2*pad-1].
+sensing_range: 6           # Agent communication range for GSO. Adjust based on Proroklab data.
+max_time: 150              # Max steps in env simulation (used for truncation). Should be >= max_time_dl.
+max_steps: 150             # Max steps limit for *evaluation* episodes (if eval_max_steps not set).
+# max_steps_train_inference: 180 # Not used since OE is disabled
 
 # --- Data Loading ---
-# !!! POINT THESE TO YOUR .MAT FILE DIRECTORIES !!!
+# Settings for the DataLoader (using CreateDatasetProroklab)
 train:
+    # !!! UPDATE PATH to your Proroklab .mat training data !!!
     root_dir: 'dataset/DataSource_DMap_FixedComR/EffectiveDensity/Training/map20x20_density_p1/10_Agent/train' # <<<--- UPDATE PATH
-    # 'mode', 'min_time', 'max_time_dl', 'nb_agents' keys are ignored by MatDataLoader
+    mode: 'train'
+    # --- Filters applied by DataLoader ---
+    min_time_dl: 5           # Min trajectory length (T) for training samples. Adjust based on data.
+    max_time_dl: 120         # Max trajectory length (T) for training samples. Adjust based on data.
 
 valid:
+    # !!! UPDATE PATH to your Proroklab .mat validation data !!!
     root_dir: 'dataset/DataSource_DMap_FixedComR/EffectiveDensity/Training/map20x20_density_p1/10_Agent/valid' # <<<--- UPDATE PATH
-    # 'mode', 'min_time', 'max_time_dl', 'nb_agents' keys are ignored by MatDataLoader
-
-# test: # Optional: configure test set path if needed later
-#    root_dir: '/path/to/your/mat/test/folder'
+    mode: 'valid'
+    # --- Filters applied by DataLoader ---
+    min_time_dl: 5           # Min trajectory length (T) for validation samples.
+    max_time_dl: 120         # Max trajectory length (T) for validation samples.

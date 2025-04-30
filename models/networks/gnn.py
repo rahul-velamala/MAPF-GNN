@@ -321,3 +321,4 @@ class MessagePassingLayer(nn.Module):
             output_node_feats = self.activation(output_node_feats)
 
         return output_node_feats
+
