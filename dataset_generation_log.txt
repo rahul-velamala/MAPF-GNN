@@ -1,0 +1,13 @@
+2025-04-30 06:05:27,102 - INFO - [<module>] - Successfully imported data generation submodules.
+2025-04-30 06:05:27,102 - INFO - [<module>] - Starting dataset generation process...
+2025-04-30 06:05:27,102 - INFO - [<module>] - Logging detailed output to: dataset_generation_log.txt
+2025-04-30 06:05:27,102 - INFO - [generate_single_configuration] - 
+==================== Processing Config ====================
+2025-04-30 06:05:27,102 - INFO - [generate_single_configuration] - Current Config: map10x10_r5_o10, Agents=5, Obstacles=10
+2025-04-30 06:05:27,103 - INFO - [generate_single_configuration] - Targeting 100 total cases for this config.
+2025-04-30 06:05:27,103 - INFO - [generate_single_configuration] -  -> Train: 70, Val: 15, Test: 15
+2025-04-30 06:05:27,103 - INFO - [generate_single_configuration] - Base directory: /scratch/rahul/v1/project/MAPF-GNN-ADC/dataset/map10x10_r5_o10
+2025-04-30 06:05:27,103 - INFO - [generate_single_configuration] - 
+--- Generating 100 Cases & Running CBS for map10x10_r5_o10 ---
+2025-04-30 06:05:27,107 - INFO - [__init__] - CBS Environment: Dimensions=10x10, Obstacles=10
+2025-04-30 06:05:27,107 - INFO - [__init__] - CBS Environment: Agents processed=5
