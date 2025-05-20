@@ -1,5 +1,6 @@
 # File: generate_all_datasets.py
 # Place this file in the project root directory (rahul-velamala-mapf-gnn/)
+# (MODIFIED TO FIX TypeError in gen_input call)
 
 import os
 import yaml
@@ -29,7 +30,8 @@ logger = logging.getLogger(__name__)
 # --- Project Imports ---
 # Assume this script is in the project root
 try:
-    from data_generation.dataset_gen import data_gen, gen_input, generate_obstacles_for_map, TimeoutError, handle_timeout, can_use_alarm
+    # generate_obstacles_for_map is NOT needed here anymore
+    from data_generation.dataset_gen import data_gen, gen_input, TimeoutError, handle_timeout, can_use_alarm
     from data_generation.trayectory_parser import parse_traject
     from data_generation.record import make_env, record_env
     logger.info("Successfully imported data generation submodules.")
@@ -108,7 +110,7 @@ def generate_single_configuration(
             "num_agents": num_agents_global,
             "board_size": [board_rows, board_cols],
             "map_shape": [board_cols, board_rows], # W, H for CBS
-            "nb_obstacles": num_obstacles_global, # Used by generate_obstacles_for_map
+            "nb_obstacles": num_obstacles_global, # Used by gen_input now
             "sensing_range": sensing_range,
             "pad": pad,
             "max_time": max_time_recording, # For record_env
@@ -127,7 +129,7 @@ def generate_single_configuration(
     # --- STEP 1 & 2 Combined: Generate Case & Run CBS ---
     logger.info(f"\n--- Generating {num_cases_target} Cases & Running CBS for {dataset_name} ---")
 
-    # Assign cases to splits
+    # Assign cases to splits (This part remains the same)
     global_case_indices = list(range(num_cases_target))
     random.shuffle(global_case_indices)
     case_assignments = {}
@@ -162,25 +164,26 @@ def generate_single_configuration(
         case_name = f"case_{total_cases_attempted_this_config:05d}"
         case_output_dir = split_path / case_name
 
-        # Generate obstacles for this case
-        obstacle_set = generate_obstacles_for_map(
-            tuple(base_config["map_shape"]), base_config["nb_obstacles"]
-        )
-        if obstacle_set is None:
-            reason = "obstacle_gen_fail"
-            cbs_failure_reasons[reason] = cbs_failure_reasons.get(reason, 0) + 1
-            continue # Try next attempt
-
-        # Generate start/goal
+        # ############# MODIFICATION START #############
+        # Generate input dictionary (which includes obstacles)
+        # using the gen_input function from dataset_gen.py
         input_data = gen_input(
-            dimensions=tuple(base_config["map_shape"]),
-            nb_agents=base_config["nb_agents"],
-            fixed_obstacles_xy_set=obstacle_set
+            dimensions=tuple(base_config["map_shape"]), # [width, height]
+            nb_obs=base_config["nb_obstacles"],      # Pass number of obstacles
+            nb_agents=base_config["nb_agents"]
+            # max_placement_attempts uses default value if omitted
         )
+
+        # Handle cases where gen_input fails (e.g., cannot place agents)
+        if input_data is None:
+            reason = "input_gen_fail"
+            cbs_failure_reasons[reason] = cbs_failure_reasons.get(reason, 0) + 1
+            continue # Try next attempt, don't proceed to data_gen
+        # ############# MODIFICATION END #############
 
         # Run CBS solver (data_gen handles directory cleanup on failure)
         success, reason = data_gen(
-            input_dict=input_data,
+            input_dict=input_data, # Pass the generated input data
             output_dir=case_output_dir,
             cbs_timeout_seconds=base_config["cbs_timeout_seconds"]
         )
@@ -216,7 +219,11 @@ def generate_single_configuration(
     for split_name, split_cfg in split_configs.items():
         if split_cfg["path"].exists() and successful_cbs_counts[split_name] > 0:
             logger.info(f"Parsing trajectories for split: {split_name}")
-            parse_traject(split_cfg["path"])
+            try:
+                parse_traject(split_cfg["path"])
+            except Exception as e:
+                 logger.error(f"Error during parsing for split {split_name}: {e}", exc_info=True)
+                 # Decide whether to continue or return False
 
     # --- STEP 4: Record Environment States ---
     logger.info(f"\n--- STEP 4: Recording Environment States & GSO for {dataset_name} ---")
@@ -224,7 +231,11 @@ def generate_single_configuration(
         if split_cfg["path"].exists() and successful_cbs_counts[split_name] > 0:
             logger.info(f"Recording states/GSO for split: {split_name}")
             # Pass the config specific to this generation run
-            record_env(split_cfg["path"], base_config)
+            try:
+                record_env(split_cfg["path"], base_config)
+            except Exception as e:
+                 logger.error(f"Error during recording for split {split_name}: {e}", exc_info=True)
+                 # Decide whether to continue or return False
 
     config_duration = time.time() - config_start_time
     logger.info(f"--- Finished Processing Config: {dataset_name} (Duration: {config_duration:.2f}s) ---")
@@ -241,10 +252,10 @@ if __name__ == "__main__":
     robot_densities = [0.05, 0.10, 0.15, 0.20]
     obstacle_densities = [0.10, 0.20, 0.30]
     sensing_range_fixed = 5
-    pad_fixed = 5 # For 9x9 FOV
-    cbs_timeout_fixed = 300# START WITH 60s. Increase if too many timeouts. Paper used 300s.
+    pad_fixed = 5 # For 9x9 FOV (FOV = 2*pad - 1)
+    cbs_timeout_fixed = 60 # START WITH 60s. Increase if too many timeouts. Paper used 300s.
     max_time_recording_fixed = 256 # Max steps for simulation recording
-    num_cases_per_config = 100 # Target scenarios per config
+    num_cases_per_config = 500 # Target scenarios per config -> Increased target
     val_ratio = 0.15
     test_ratio = 0.15
     base_dataset_dir = Path("./dataset") # Root directory for all datasets
@@ -257,10 +268,14 @@ if __name__ == "__main__":
     base_dataset_dir.mkdir(parents=True, exist_ok=True)
 
     # Iterate through all configurations
+    total_configs = len(env_sizes) * len(robot_densities) * len(obstacle_densities)
+    config_counter = 0
     for size in env_sizes:
         board_r, board_c = size
         for r_density in robot_densities:
             for o_density in obstacle_densities:
+                config_counter += 1
+                logger.info(f"\n===== Processing Config {config_counter}/{total_configs} =====")
                 try:
                     success = generate_single_configuration(
                         board_rows=board_r,
@@ -287,7 +302,7 @@ if __name__ == "__main__":
 
     overall_duration = time.time() - overall_start_time
     logger.info(f"\n{'='*20} Overall Generation Summary {'='*20}")
-    logger.info(f"Total configurations attempted: {len(env_sizes) * len(robot_densities) * len(obstacle_densities)}")
+    logger.info(f"Total configurations attempted: {total_configs}")
     logger.info(f"Configurations successfully generated (at least partially): {configs_generated}")
     logger.info(f"Configurations failed entirely: {configs_failed}")
     logger.info(f"Total execution time: {overall_duration:.2f} seconds")

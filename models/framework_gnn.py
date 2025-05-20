@@ -1,5 +1,6 @@
 # File: models/framework_gnn.py
 # (Revised: Dynamic GNN layer loading including ADC, other cleanups)
+# (MODIFIED TO FIX UnboundLocalError for ADCLayer)
 
 import torch
 import torch.nn as nn
@@ -105,20 +106,22 @@ class Network(nn.Module):
         gnn_layers_list = []
         gnn_feature_dims = [self.gnn_input_feature_dim] + gnn_node_dims
 
-        # --- Dynamically Import GNN Layer Class ---
+        # ############# MODIFICATION START #############
+        # Import all potential layer classes first to ensure they are in scope
+        from .networks.gnn import GCNLayer, MessagePassingLayer
+        from .networks.adc_layer import ADCLayer
+        # ############# MODIFICATION END #############
+
         GNNLayerClass = None
         logger.info(f"Building GNN (Type: {msg_type}):")
         try:
             if msg_type == 'gcn':
-                from .networks.gnn import GCNLayer
                 GNNLayerClass = GCNLayer
                 k_arg_name = "filter_number" # GCNLayer expects this arg name
             elif msg_type == 'message':
-                from .networks.gnn import MessagePassingLayer
                 GNNLayerClass = MessagePassingLayer
                 k_arg_name = "filter_number" # MessagePassingLayer expects this arg name
             elif msg_type == 'adc':
-                from .networks.adc_layer import ADCLayer
                 GNNLayerClass = ADCLayer
                 k_arg_name = "K" # ADCLayer expects 'K'
             else:
@@ -140,7 +143,8 @@ class Network(nn.Module):
                 "bias": True,
             }
             # Add ADC specific args if needed
-            if GNNLayerClass == ADCLayer:
+            # Check using the imported class name directly
+            if GNNLayerClass == ADCLayer: # NOW ADCLayer IS DEFINED HERE
                  layer_args["initial_t"] = config.get("adc_initial_t", 1.0)
                  layer_args["train_t"] = config.get("adc_train_t", True)
 
@@ -191,8 +195,11 @@ class Network(nn.Module):
         batch_size = states.shape[0]
         N = states.shape[1]
         # Allow dynamic N if needed, but log warning if different from config
-        if N != self.num_agents:
+        if hasattr(self, 'num_agents') and N != self.num_agents: # Check if num_agents exists
             logger.warning(f"Input N ({N}) differs from config num_agents ({self.num_agents}). Using N={N}.")
+        elif not hasattr(self, 'num_agents'):
+             logger.warning("Model attribute 'num_agents' not found. Cannot check N consistency.")
+
 
         expected_state_shape_suffix = (self.cnn_input_channels, self.fov_size, self.fov_size)
         if states.shape[2:] != expected_state_shape_suffix: raise ValueError(f"Input states shape error")
@@ -212,20 +219,27 @@ class Network(nn.Module):
         encoded_features = self.compressMLP(cnn_features_flat)
 
         # 3. GNN Layers
+        # Reshape features for GNN: [B*N, GNN_in_dim] -> [B, N, GNN_in_dim] -> [B, GNN_in_dim, N]
         gnn_input_features = encoded_features.view(batch_size, N, self.gnn_input_feature_dim).permute(0, 2, 1)
         gnn_output_features = gnn_input_features
         num_gnn_modules = len(self.GNNLayers)
-        for i in range(0, num_gnn_modules, 2):
+        for i in range(0, num_gnn_modules, 2): # Step by 2 (Layer + Activation)
              gnn_layer_op = self.GNNLayers[i]
              activation_op = self.GNNLayers[i+1]
-             if hasattr(gnn_layer_op, 'addGSO'): gnn_layer_op.addGSO(gso)
+             # Pass GSO to the layer if it expects it (via addGSO method)
+             if hasattr(gnn_layer_op, 'addGSO'):
+                 gnn_layer_op.addGSO(gso)
+             # Execute layer and activation
              gnn_output_features = gnn_layer_op(gnn_output_features)
              gnn_output_features = activation_op(gnn_output_features)
 
         # 4. Action MLP
+        # Reshape GNN output for MLP: [B, GNN_out_dim, N] -> [B, N, GNN_out_dim] -> [B*N, GNN_out_dim]
         action_mlp_input = gnn_output_features.permute(0, 2, 1)
         action_mlp_input_flat = action_mlp_input.reshape(batch_size * N, self.action_mlp_input_dim)
-        action_logits_flat = self.actionMLP(action_mlp_input_flat)
-        action_logits = action_logits_flat.view(batch_size, N, self.num_actions)
+        action_logits_flat = self.actionMLP(action_mlp_input_flat) # Shape: [B*N, num_actions]
+
+        # Reshape back to per-agent logits
+        action_logits = action_logits_flat.view(batch_size, N, self.num_actions) # Shape: [B, N, A]
 
         return action_logits

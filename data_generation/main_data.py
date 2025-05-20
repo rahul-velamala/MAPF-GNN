@@ -1,5 +1,5 @@
 # File: data_generation/main_data.py
-# (Revised for Robustness, Clarity, Pathlib Usage, and MULTIPROCESSING)
+# (MODIFIED to loop through multiple configurations using parallel functions)
 
 import os
 import yaml
@@ -8,8 +8,9 @@ from pathlib import Path
 import traceback
 import logging
 import time
+import shutil # Added for potential cleanup in worker exceptions
 from tqdm import tqdm
-from multiprocessing import Pool, cpu_count
+from multiprocessing import Pool, cpu_count, set_start_method # Import set_start_method
 from functools import partial # To pass fixed arguments to worker functions
 
 # --- Setup Logging ---
@@ -22,9 +23,11 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # Use relative imports assuming standard project structure
 try:
     # These imports need to work in the main process AND the worker processes
-    from .dataset_gen import create_solutions as create_solutions_sequential, data_gen, gen_input # Keep sequential for comparison/fallback maybe
+    # create_solutions_sequential is removed as we focus on parallel
+    from .dataset_gen import data_gen, gen_input
     from .trayectory_parser import parse_traject
-    from .record import record_env as record_env_sequential, make_env # Keep sequential
+    # record_env_sequential is removed
+    from .record import make_env
     logger.info("Successfully imported data generation submodules.")
 except ImportError as e:
     logger.error(f"FATAL ERROR: Failed to import data generation submodules: {e}", exc_info=True)
@@ -33,7 +36,7 @@ except ImportError as e:
 
 logger.info("Starting data_generation/main_data.py...")
 
-# --- Worker Functions for Multiprocessing ---
+# --- Worker Functions for Multiprocessing (Unchanged) ---
 
 def _generate_one_case_worker(case_index: int, output_dir: Path, config: dict) -> tuple[int, bool, str]:
     """Worker function to generate input and solution for one case."""
@@ -85,7 +88,10 @@ def _record_one_case_worker(case_path: Path, config: dict) -> tuple[str, bool]:
         # --- Create Env ---
         env = make_env(case_path, config)
         if env is None: return case_path.name, False # Env creation failed
-        if num_agents_traj != env.nb_agents: return case_path.name, False # Agent mismatch
+        # Check consistency after env creation
+        if num_agents_traj != env.nb_agents:
+             logger.warning(f"Agent mismatch after env creation in {case_path.name}. Traj N={num_agents_traj}, Env N={env.nb_agents}")
+             return case_path.name, False # Agent mismatch
 
         # --- Simulate and Record ---
         initial_obs, _ = env.reset(seed=np.random.randint(1e6))
@@ -93,6 +99,7 @@ def _record_one_case_worker(case_path: Path, config: dict) -> tuple[str, bool]:
         initial_gso = initial_obs.get('adj_matrix')
         if initial_fov is None or initial_fov.shape != expected_fov_shape or \
            initial_gso is None or initial_gso.shape != expected_gso_shape:
+            logger.warning(f"Initial obs shape error in {case_path.name}. FOV:{initial_fov.shape if initial_fov is not None else 'None'}(exp {expected_fov_shape}), GSO:{initial_gso.shape if initial_gso is not None else 'None'}(exp {expected_gso_shape})")
             return case_path.name, False # Shape error
 
         recordings_fov = np.zeros((num_timesteps + 1,) + expected_fov_shape, dtype=np.float32)
@@ -109,10 +116,12 @@ def _record_one_case_worker(case_path: Path, config: dict) -> tuple[str, bool]:
             obs_gso = current_obs.get('adj_matrix')
             if obs_fov is None or obs_fov.shape != expected_fov_shape or \
                obs_gso is None or obs_gso.shape != expected_gso_shape:
+                logger.warning(f"Obs shape error during sim step {i+1} in {case_path.name}.")
                 sim_successful = False; break
             recordings_fov[i + 1] = obs_fov
             recordings_gso[i + 1] = obs_gso
             if terminated or truncated:
+                # Trim arrays if simulation ended early
                 recordings_fov = recordings_fov[:i+2]
                 recordings_gso = recordings_gso[:i+2]
                 break
@@ -125,6 +134,7 @@ def _record_one_case_worker(case_path: Path, config: dict) -> tuple[str, bool]:
             np.save(gso_save_path, recordings_gso)
             return case_path.name, True
         else:
+            # Clean up potentially created empty files if sim failed midway? Optional.
             return case_path.name, False
 
     except Exception as e:
@@ -134,11 +144,11 @@ def _record_one_case_worker(case_path: Path, config: dict) -> tuple[str, bool]:
         if env is not None:
             env.close()
 
-# --- Modified Main Steps ---
+# --- Parallel Runner Functions (Unchanged) ---
 
 def create_solutions_parallel(dataset_path: Path, num_target_cases: int, config: dict, num_workers: int):
     """Generates CBS solutions in parallel."""
-    logger.info(f"Starting parallel solution generation with {num_workers} workers.")
+    logger.info(f"Starting parallel solution generation with {num_workers} workers for {dataset_path.name}.")
     try:
         dataset_path.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -149,7 +159,7 @@ def create_solutions_parallel(dataset_path: Path, num_target_cases: int, config:
     existing_successful_cases = 0
     highest_existing_index = -1
     if dataset_path.exists():
-        # This check can be slow for large directories, consider optimizing if needed
+        # Optimization: Check only a sample or rely on index for speed if necessary
         for item in dataset_path.iterdir():
              if item.is_dir() and item.name.startswith("case_") and (item / "solution.yaml").exists():
                  existing_successful_cases += 1
@@ -166,51 +176,72 @@ def create_solutions_parallel(dataset_path: Path, num_target_cases: int, config:
     logger.info(f"Found {existing_successful_cases} existing cases. Need to generate {needed_cases} more.")
     logger.info(f"Starting case index: {start_index}")
 
-    tasks_to_submit = needed_cases
-    max_attempts = max(needed_cases * 10, 200) # Limit overall attempts
+    # Limit overall attempts, e.g., 3x needed or 100 minimum
+    max_attempts = max(needed_cases * 3, 100)
     submitted_indices = set()
     generated_count = 0
     attempt_count = 0
     next_idx = start_index
 
     # Prepare fixed arguments for worker function
-    worker_func = partial(_generate_one_case_worker, output_dir=dataset_path, config=config)
+    # Pass only the necessary config items to avoid large object serialization
+    worker_config = {
+        "map_shape": config["map_shape"],
+        "nb_obstacles": config["nb_obstacles"],
+        "nb_agents": config["nb_agents"],
+        "cbs_timeout_seconds": config.get("cbs_timeout_seconds", 60)
+    }
+    worker_func = partial(_generate_one_case_worker, output_dir=dataset_path, config=worker_config)
     results_list = []
 
     # Use Pool for parallel execution
     with Pool(processes=num_workers) as pool:
-        # Use imap_unordered for potentially better performance as results come in
-        # Need to manage which indices are submitted vs completed
         futures = []
         pbar = tqdm(total=needed_cases, desc=f"Generating ({dataset_path.name})", unit="case")
 
         while generated_count < needed_cases and attempt_count < max_attempts:
-            # Submit new tasks if pool has capacity and we haven't submitted enough attempts
+            # Submit new tasks
             while len(futures) < num_workers * 2 and attempt_count < max_attempts: # Keep pool busy
-                if next_idx not in submitted_indices:
-                    futures.append(pool.apply_async(_generate_one_case_worker, (next_idx, dataset_path, config)))
+                # Check if case_idx already exists physically to avoid re-submission if failed partially
+                case_check_path = dataset_path / f"case_{next_idx}"
+                if not case_check_path.exists() and next_idx not in submitted_indices:
+                    futures.append(pool.apply_async(worker_func, (next_idx,))) # Only pass changing arg
                     submitted_indices.add(next_idx)
                     attempt_count += 1
                     next_idx += 1
                 else:
-                     # This index was submitted but maybe failed? Try next one.
-                     # This logic might need refinement if specific retries are needed.
-                     next_idx += 1
+                    # If index exists or was submitted, skip to next potential index
+                    next_idx += 1
+                    # Add a check to break if next_idx grows excessively large compared to attempts
+                    if next_idx > start_index + max_attempts * 2:
+                        logger.warning(f"next_idx ({next_idx}) seems too high, potential issue finding free indices.")
+                        break
+
+
+            if not futures: # Break if no tasks could be submitted (e.g., next_idx too high)
+                break
 
             # Process completed tasks
-            completed_futures = [f for f in futures if f.ready()]
-            for future in completed_futures:
-                 case_idx, success, reason = future.get()
-                 results_list.append((case_idx, success, reason))
-                 if success:
-                     generated_count += 1
-                     pbar.update(1)
-                 # Remove completed future
-                 futures.remove(future)
-
-            # Avoid busy-waiting if pool is full but no results ready
-            if len(futures) >= num_workers * 2 or attempt_count >= max_attempts:
+            ready_futures = [f for f in futures if f.ready()]
+            if not ready_futures and len(futures) >= num_workers * 2:
+                 # Wait briefly if pool is full but nothing is ready
                  time.sleep(0.1)
+                 continue
+
+            for future in ready_futures:
+                 try:
+                     case_idx, success, reason = future.get()
+                     results_list.append((case_idx, success, reason))
+                     if success:
+                         generated_count += 1
+                         pbar.update(1)
+                 except Exception as e:
+                      logger.error(f"Error getting result from future: {e}", exc_info=True)
+                      # Try to find which case index this might have been (difficult)
+                      results_list.append((-1, False, "future_get_error")) # Log failure
+                 finally:
+                      futures.remove(future)
+
 
         # Clean up progress bar
         pbar.close()
@@ -218,13 +249,14 @@ def create_solutions_parallel(dataset_path: Path, num_target_cases: int, config:
         # Process any remaining completed futures after loop ends
         for future in futures:
             if future.ready():
-                case_idx, success, reason = future.get()
-                results_list.append((case_idx, success, reason))
-                if success:
-                    generated_count += 1 # Count potentially missed updates
+                try:
+                    case_idx, success, reason = future.get()
+                    results_list.append((case_idx, success, reason))
+                    if success: generated_count += 1 # Count potentially missed updates
+                except Exception: pass # Error already logged
 
 
-    # --- Final Summary ---
+    # --- Final Summary for this split ---
     if attempt_count >= max_attempts and generated_count < needed_cases:
         logger.warning(f"Reached maximum generation attempts ({max_attempts}) but only generated {generated_count}/{needed_cases} cases for {dataset_path.name}.")
 
@@ -235,7 +267,7 @@ def create_solutions_parallel(dataset_path: Path, num_target_cases: int, config:
          failure_counts[reason_key] = failure_counts.get(reason_key, 0) + 1
 
     final_successful_cases = sum(1 for item in dataset_path.iterdir() if item.is_dir() and item.name.startswith("case_") and (item / "solution.yaml").exists())
-    logger.info(f"\n--- Parallel Generation Finished for: {dataset_path.name} ---")
+    logger.info(f"Parallel Generation Finished for: {dataset_path.name}")
     logger.info(f"Total successful cases in directory: {final_successful_cases}")
     logger.info(f"Generated {generated_count} successful cases in this run.")
 
@@ -247,7 +279,6 @@ def create_solutions_parallel(dataset_path: Path, num_target_cases: int, config:
             if count > 0:
                 logger.info(f"  - {reason}: {count}")
 
-
 def record_env_parallel(path: Path, config: dict, num_workers: int):
     """Records states/GSO in parallel."""
     if not path.is_dir():
@@ -257,32 +288,39 @@ def record_env_parallel(path: Path, config: dict, num_workers: int):
     # Find cases that have trajectory.npy but not states.npy/gso.npy
     cases_to_process = []
     try:
-        all_cases = [d for d in path.glob("case_*") if d.is_dir()]
-        for case_path in all_cases:
-            traj_file = case_path / "trajectory.npy"
-            state_file = case_path / "states.npy"
-            gso_file = case_path / "gso.npy"
-            if traj_file.exists() and not (state_file.exists() and gso_file.exists()):
-                cases_to_process.append(case_path)
-            elif not traj_file.exists() and not (state_file.exists() and gso_file.exists()):
-                 logger.debug(f"Skipping {case_path.name}: Missing trajectory.npy for recording.")
-
+        # Use iterator for potentially large directories
+        for item in path.glob("case_*"):
+            if item.is_dir():
+                 traj_file = item / "trajectory.npy"
+                 state_file = item / "states.npy"
+                 gso_file = item / "gso.npy"
+                 # Process if traj exists AND either state or gso is missing
+                 if traj_file.exists() and not (state_file.exists() and gso_file.exists()):
+                     cases_to_process.append(item)
+                 elif not traj_file.exists() and not (state_file.exists() and gso_file.exists()):
+                      logger.debug(f"Skipping {item.name}: Missing trajectory.npy for recording.")
     except Exception as e:
         logger.error(f"Error listing cases for recording in {path}: {e}", exc_info=True)
         return
 
     if not cases_to_process:
         logger.info(f"No cases found in {path.name} needing state/GSO recording.")
-        # Check if cases exist but are already recorded
-        num_already_recorded = sum(1 for d in path.glob("case_*") if (d / "states.npy").exists())
+        num_already_recorded = sum(1 for d in path.glob("case_*") if (d / "states.npy").exists() and (d / "gso.npy").exists())
         logger.info(f"({num_already_recorded} cases appear to be already recorded).")
         return
 
-    logger.info(f"\n--- Recording States/GSOs in Parallel for Dataset: {path.name} ---")
+    logger.info(f"Recording States/GSOs in Parallel for Dataset: {path.name}")
     logger.info(f"Found {len(cases_to_process)} cases to process with {num_workers} workers.")
 
     # Prepare fixed arguments for worker
-    worker_func = partial(_record_one_case_worker, config=config)
+    worker_config = {
+        "num_agents": config["num_agents"],
+        "pad": config["pad"],
+        "board_size": config["board_size"],
+        "sensing_range": config["sensing_range"],
+        "max_time": config["max_time"],
+    }
+    worker_func = partial(_record_one_case_worker, config=worker_config)
     recorded_count = 0
     failed_count = 0
     results_list = []
@@ -299,134 +337,180 @@ def record_env_parallel(path: Path, config: dict, num_workers: int):
                  pbar.update(1)
                  pbar.set_postfix({"RecOK": recorded_count, "RecFail": failed_count})
 
-    logger.info(f"\n--- Recording Finished for: {path.name} ---")
+    logger.info(f"Recording Finished for: {path.name}")
     logger.info(f"Successfully recorded state/GSO for: {recorded_count} cases.")
     if failed_count > 0:
-        logger.info(f"Failed to record for: {failed_count} cases.")
-        # Optionally log failed case names:
+        logger.warning(f"Failed to record for: {failed_count} cases.")
         # failed_cases = [name for name, succ in results_list if not succ]
-        # logger.info(f"Failed cases: {failed_cases}")
-
+        # logger.debug(f"Failed recording cases: {failed_cases[:20]}...") # Log first few failed
 
 # --- Main Execution Logic ---
 if __name__ == "__main__":
+
+    # Set start method for multiprocessing (important for some environments)
+    try:
+        set_start_method('spawn', force=True)
+        logger.info("Multiprocessing start method set to 'spawn'.")
+    except RuntimeError:
+        logger.warning("Multiprocessing context already set or 'spawn' not available/forced.")
 
     logger.info("Entered __main__ block.")
 
     # --- Configuration ---
     try:
-        logger.info("Defining configuration...")
-        # !!! USER: Define your dataset parameters here !!!
-        dataset_name = "5_8_28_fov5_parallel_large" # Example name
-        num_agents_global = 5
-        board_rows_global = 28
-        board_cols_global = 28
-        num_obstacles_global = 8
-        sensing_range_global = 4
-        pad_global = 3
-        max_time_env = 120
-        cbs_timeout_generation = 30
+        logger.info("Defining configuration parameters...")
 
-        # --- Dataset Split Configuration ---
-        base_data_dir = Path("dataset") / dataset_name
-        num_total_cases = 60000 # Adjust as needed
-        val_ratio = 0.2
-        test_ratio = 0.001
+        # === Define Parameter Ranges ===
+        env_sizes = [(10, 10)] # (rows, cols)
+        robot_densities = [0.05]
+        obstacle_densities = [0.3]
 
-        if not (0 <= val_ratio < 1 and 0 <= test_ratio < 1 and (val_ratio + test_ratio) < 1):
-             raise ValueError("val_ratio/test_ratio invalid.")
-        num_cases_val_target = int(num_total_cases * val_ratio)
-        num_cases_test_target = int(num_total_cases * test_ratio)
-        num_cases_train_target = num_total_cases - num_cases_val_target - num_cases_test_target
+        # === Define Fixed Parameters ===
+        sensing_range_fixed = 5
+        pad_fixed = 5           # For 9x9 FOV (FOV_size = 2*pad - 1 = 9)
+        max_time_env_fixed = 256 # Max steps for recording simulation
+        cbs_timeout_generation_fixed = 60 # Timeout for CBS during generation (seconds)
 
-        # --- Parallelism Config ---
-        # Use slightly fewer workers than total cores to leave resources for OS/other tasks
-        num_parallel_workers = max(1, cpu_count() - 1)
+        # === Dataset Split & Target Config ===
+        num_cases_per_config = 5000 # TARGET PER CONFIGURATION
+        val_ratio = 0.15
+        test_ratio = 0.15
+        base_output_dir = Path("./dataset5") # Root directory for all datasets
+
+        # === Parallelism Config ===
+        num_parallel_workers = max(1, cpu_count() - 2) # Leave 2 cores free
         logger.info(f"Using {num_parallel_workers} parallel workers (CPU cores: {cpu_count()}).")
 
-
-        base_config = {
-            "num_agents": num_agents_global,
-            "board_size": [board_rows_global, board_cols_global],
-            "sensing_range": sensing_range_global,
-            "pad": pad_global,
-            "max_time": max_time_env,
-            "map_shape": [board_cols_global, board_rows_global],
-            "nb_agents": num_agents_global,
-            "nb_obstacles": num_obstacles_global,
-            "cbs_timeout_seconds": cbs_timeout_generation,
-        }
-
-        data_sets = {}
-        if num_cases_train_target > 0: data_sets["train"] = {"path": base_data_dir / "train", "cases": num_cases_train_target}
-        if num_cases_val_target > 0: data_sets["val"] = {"path": base_data_dir / "val", "cases": num_cases_val_target}
-        if num_cases_test_target > 0: data_sets["test"] = {"path": base_data_dir / "test", "cases": num_cases_test_target}
-
-        if not data_sets: logger.warning("No dataset splits configured."); exit(0)
-
-        logger.info(f"Base directory: {base_data_dir.resolve()}")
-        logger.info(f"Base config: {base_config}")
-        logger.info(f"Datasets: {list(data_sets.keys())}")
-        for name, cfg in data_sets.items(): logger.info(f"  - {name}: Target cases = {cfg['cases']}, Path = {cfg['path']}")
-
     except Exception as e:
-        logger.error(f"FATAL ERROR during configuration: {e}", exc_info=True)
+        logger.error(f"FATAL ERROR during initial configuration setup: {e}", exc_info=True)
         exit(1)
 
     # --- Generation Loop ---
-    logger.info("\n--- Starting Dataset Generation ---")
-    overall_success = True
+    logger.info("\n--- Starting Multi-Configuration Dataset Generation ---")
+    overall_success_count = 0
+    overall_fail_count = 0
+    total_configs_to_generate = len(env_sizes) * len(robot_densities) * len(obstacle_densities)
+    config_counter = 0
     total_start_time = time.time()
 
-    for set_name, set_config in data_sets.items():
-        current_path: Path = set_config["path"]
-        num_target = set_config["cases"]
-        split_start_time = time.time()
+    for size in env_sizes:
+        board_rows_global, board_cols_global = size
+        for r_density in robot_densities:
+            for o_density in obstacle_densities:
+                config_counter += 1
+                config_start_time = time.time()
+                logger.info(f"\n\n{'='*15} Processing Config {config_counter}/{total_configs_to_generate} {'='*15}")
 
-        logger.info(f"\n\n{'='*10} Processing dataset split: {set_name} {'='*10}")
-        logger.info(f"Target path: {current_path.resolve()}")
-        logger.info(f"Target number of successful cases: {num_target}")
+                # --- Calculate Config-Specific Parameters ---
+                try:
+                    num_agents_global = int(r_density * board_rows_global * board_cols_global)
+                    if num_agents_global < 2: num_agents_global = 2
+                    num_obstacles_global = int(o_density * board_rows_global * board_cols_global)
+                    dataset_name = f"map{board_rows_global}x{board_cols_global}_r{int(r_density*100)}_o{int(o_density*100)}_p{pad_fixed}"
+                    logger.info(f"Config: {dataset_name}, Agents={num_agents_global}, Obstacles={num_obstacles_global}")
 
-        try:
-            current_path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError as e:
-            logger.error(f"FATAL ERROR creating parent dir for {current_path}: {e}", exc_info=True)
-            overall_success = False; continue
+                    config_data_dir = base_output_dir / dataset_name
+                    train_path = config_data_dir / "train"
+                    val_path = config_data_dir / "val"
+                    test_path = config_data_dir / "test"
 
-        run_config = base_config.copy()
+                    # Calculate split sizes for THIS config
+                    num_cases_val_target = int(num_cases_per_config * val_ratio)
+                    num_cases_test_target = int(num_cases_per_config * test_ratio)
+                    num_cases_train_target = num_cases_per_config - num_cases_val_target - num_cases_test_target
 
-        # --- Step 1: Generate CBS solutions (Parallel) ---
-        try:
-            logger.info("\n>>> Running Step 1: create_solutions (Parallel CBS Generation)...")
-            create_solutions_parallel(current_path, num_target, run_config, num_parallel_workers)
-            logger.info("<<< Finished Step 1: create_solutions.")
-        except Exception as e:
-            logger.error(f"FATAL ERROR during create_solutions_parallel for '{set_name}': {e}", exc_info=True)
-            overall_success = False; continue
+                    # Config dict passed to worker/parallel functions FOR THIS ITERATION
+                    current_config = {
+                        "num_agents": num_agents_global,
+                        "board_size": [board_rows_global, board_cols_global],
+                        "sensing_range": sensing_range_fixed,
+                        "pad": pad_fixed,
+                        "max_time": max_time_env_fixed,
+                        "map_shape": [board_cols_global, board_rows_global], # W, H for CBS
+                        "nb_agents": num_agents_global,
+                        "nb_obstacles": num_obstacles_global,
+                        "cbs_timeout_seconds": cbs_timeout_generation_fixed,
+                    }
 
-        # --- Step 2: Parse trajectories (Sequential) ---
-        try:
-            logger.info("\n>>> Running Step 2: parse_traject (Trajectory Parsing)...")
-            parse_traject(current_path) # Expects Path object
-            logger.info("<<< Finished Step 2: parse_traject.")
-        except Exception as e:
-            logger.error(f"FATAL ERROR during parse_traject for '{set_name}': {e}", exc_info=True)
-            overall_success = False; continue
+                    # Data sets dict FOR THIS ITERATION
+                    data_sets_for_config = {}
+                    if num_cases_train_target > 0: data_sets_for_config["train"] = {"path": train_path, "cases": num_cases_train_target}
+                    if num_cases_val_target > 0: data_sets_for_config["val"] = {"path": val_path, "cases": num_cases_val_target}
+                    if num_cases_test_target > 0: data_sets_for_config["test"] = {"path": test_path, "cases": num_cases_test_target}
 
-        # --- Step 3: Record environment states (Parallel) ---
-        try:
-            logger.info("\n>>> Running Step 3: record_env (Parallel State/GSO Recording)...")
-            record_env_parallel(current_path, run_config, num_parallel_workers) # Expects Path object
-            logger.info("<<< Finished Step 3: record_env.")
-        except Exception as e:
-            logger.error(f"FATAL ERROR during record_env_parallel for '{set_name}': {e}", exc_info=True)
-            overall_success = False; continue
+                    if not data_sets_for_config:
+                        logger.warning(f"No dataset splits defined for config {dataset_name} (num_cases_per_config={num_cases_per_config}). Skipping.")
+                        continue
 
-        split_duration = time.time() - split_start_time
-        logger.info(f"\n--- Successfully finished processing dataset split: {set_name} (Duration: {split_duration:.2f}s) ---")
+                    logger.info(f"Target cases: Train={num_cases_train_target}, Val={num_cases_val_target}, Test={num_cases_test_target}")
+                    logger.info(f"Output dir: {config_data_dir.resolve()}")
+
+                except Exception as e:
+                     logger.error(f"Error setting up parameters for config {config_counter}: {e}", exc_info=True)
+                     overall_fail_count += 1
+                     continue # Skip to next configuration
+
+                # --- Process Splits for Current Config ---
+                config_fully_successful = True
+                for set_name, set_config in data_sets_for_config.items():
+                    current_path: Path = set_config["path"]
+                    num_target = set_config["cases"]
+                    split_start_time = time.time()
+
+                    logger.info(f"\n-- Processing split: {set_name} for {dataset_name} --")
+                    logger.info(f"Target path: {current_path.resolve()}")
+                    logger.info(f"Target successful cases: {num_target}")
+
+                    try:
+                        current_path.parent.mkdir(parents=True, exist_ok=True) # Create dataset_name dir if needed
+                    except OSError as e:
+                        logger.error(f"FATAL ERROR creating parent dir {current_path.parent}: {e}", exc_info=True)
+                        config_fully_successful = False; break # Break from processing splits for this config
+
+                    # --- Step 1: Generate CBS solutions (Parallel) ---
+                    try:
+                        logger.info(f"Running Step 1: create_solutions_parallel for {set_name}...")
+                        create_solutions_parallel(current_path, num_target, current_config, num_parallel_workers)
+                        logger.info(f"Finished Step 1 for {set_name}.")
+                    except Exception as e:
+                        logger.error(f"ERROR during create_solutions_parallel for '{dataset_name}/{set_name}': {e}", exc_info=True)
+                        config_fully_successful = False; # Continue to next split or config? Let's continue to next split maybe
+
+                    # --- Step 2: Parse trajectories (Sequential) ---
+                    try:
+                        logger.info(f"Running Step 2: parse_traject for {set_name}...")
+                        parse_traject(current_path) # Expects Path object
+                        logger.info(f"Finished Step 2 for {set_name}.")
+                    except Exception as e:
+                        logger.error(f"ERROR during parse_traject for '{dataset_name}/{set_name}': {e}", exc_info=True)
+                        config_fully_successful = False;
+
+                    # --- Step 3: Record environment states (Parallel) ---
+                    try:
+                        logger.info(f"Running Step 3: record_env_parallel for {set_name}...")
+                        record_env_parallel(current_path, current_config, num_parallel_workers) # Expects Path object
+                        logger.info(f"Finished Step 3 for {set_name}.")
+                    except Exception as e:
+                        logger.error(f"ERROR during record_env_parallel for '{dataset_name}/{set_name}': {e}", exc_info=True)
+                        config_fully_successful = False;
+
+                    split_duration = time.time() - split_start_time
+                    logger.info(f"-- Finished processing split: {set_name} (Duration: {split_duration:.2f}s) --")
+
+                # --- Update Overall Counters ---
+                if config_fully_successful:
+                    overall_success_count += 1
+                else:
+                    overall_fail_count += 1
+                config_duration = time.time() - config_start_time
+                logger.info(f"--- Finished processing config {config_counter}/{total_configs_to_generate}: {dataset_name} (Duration: {config_duration:.2f}s) ---")
+
 
     # --- End Generation Loop ---
     total_duration = time.time() - total_start_time
-    logger.info(f"\n\n--- All dataset generation steps completed (Total Duration: {total_duration:.2f}s) ---")
-    if not overall_success:
-        logger.warning("One or more dataset splits encountered errors during generation.")
+    logger.info(f"\n\n{'='*20} Overall Generation Summary {'='*20}")
+    logger.info(f"Total configurations attempted: {total_configs_to_generate}")
+    logger.info(f"Configurations completed without fatal errors: {overall_success_count}")
+    logger.info(f"Configurations with fatal errors: {overall_fail_count}")
+    logger.info(f"Total execution time: {total_duration:.2f} seconds")
+    logger.info(f"Generated datasets are located in: {base_output_dir.resolve()}")

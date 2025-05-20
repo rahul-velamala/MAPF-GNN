@@ -1,6 +1,7 @@
 # File: data_generation/dataset_gen.py
 # (Includes fix for YAML serialization, timeout handling, path handling, cleanup)
-
+import numpy as np
+import logging
 import sys
 import os
 import yaml
@@ -263,6 +264,44 @@ def data_gen(input_dict: dict | None, output_dir: Path, cbs_timeout_seconds=60) 
         except OSError: pass
         return False, "io_error"
 
+def generate_obstacles_for_map(dimensions: tuple[int, int], nb_obs: int, max_placement_attempts=100) -> set[tuple[int, int]] | None:
+    """
+    Generates a set of obstacle coordinates (x, y) for CBS.
+
+    Args:
+        dimensions (tuple): (width, height) of the map.
+        nb_obs (int): Number of obstacles to generate.
+        max_placement_attempts (int): Max attempts to place each obstacle.
+
+    Returns:
+        set: A set of obstacle tuples (x, y), or None if placement failed.
+    """
+    map_width, map_height = map(int, dimensions)
+    generated_obstacles_set = set()
+    rng = np.random.default_rng() # Use default RNG
+
+    if nb_obs < 0: nb_obs = 0
+    if nb_obs >= map_width * map_height:
+        logger.warning(f"Requested obstacles ({nb_obs}) >= total cells. Cannot place.")
+        return set() # Return empty set if impossible
+
+    num_placed_obstacles = 0
+    for _ in range(nb_obs):
+        attempts = 0
+        while attempts < max_placement_attempts:
+            # Generate position (x, y) for CBS format
+            obstacle_pos_xy = (rng.integers(0, map_width), rng.integers(0, map_height))
+            if obstacle_pos_xy not in generated_obstacles_set:
+                generated_obstacles_set.add(obstacle_pos_xy)
+                num_placed_obstacles += 1
+                break
+            attempts += 1
+        if attempts == max_placement_attempts:
+            logger.warning(f"Could not place obstacle {num_placed_obstacles+1}/{nb_obs} after {max_placement_attempts} attempts. Returning {num_placed_obstacles} obstacles.")
+            # Return the successfully placed obstacles so far
+            return generated_obstacles_set
+
+    return generated_obstacles_set
 
 def create_solutions(dataset_path: Path, num_target_cases: int, config: dict):
     """

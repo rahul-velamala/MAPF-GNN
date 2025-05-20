@@ -126,7 +126,7 @@ logger.info(f"Using device: {config['device']}")
 
 # --- Results Directory ---
 exp_name_cleaned = exp_name.replace('\\', '/') # Replace backslashes for consistency
-results_dir = Path("results") / exp_name_cleaned
+results_dir = Path("results_afterchange") / exp_name_cleaned
 try:
     results_dir.mkdir(parents=True, exist_ok=True)
 except OSError as e:

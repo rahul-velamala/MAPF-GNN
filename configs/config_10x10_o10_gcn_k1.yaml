@@ -1,0 +1,60 @@
+# File: configs/config_10x10_o10_gcn_k1.yaml
+# Training GCN K=1 on map10x10_r5_o10_p5 dataset
+
+# --- Experiment Name (Unique Identifier) ---
+exp_name: 'gcn_k1_10x10_o10_p5'
+
+# --- Model Architecture ---
+net_type: 'gnn'
+msg_type: 'gcn'
+channels: [16, 16, 16]   # CNN output channels
+strides: [1, 1, 1]        # CNN strides
+# kernels: [3, 3, 3]      # Optional (default 3)
+# paddings: [1, 1, 1]     # Optional (default 1)
+encoder_layers: 1         # MLP Encoder layers
+encoder_dims: [64]        # MLP Encoder output dim
+graph_filters: [1]        # <<<--- GNN K value
+node_dims: [128]          # GNN output dim
+action_layers: 1          # Action MLP layers
+
+# --- Training Hyperparameters ---
+epochs: 100
+learning_rate: 1e-4
+weight_decay: 1e-4
+batch_size: 32
+num_workers: 0            # Start with 0 for debugging
+eval_frequency: 5
+
+# --- Online Expert (DAgger) ---
+# Disabled via --oe_disable flag when running train.py
+# online_expert:
+#  frequency_epochs: 4
+#  num_cases_to_run: 500
+#  cbs_timeout_seconds: 10
+
+# --- Evaluation ---
+tests_episodes: 50        # Number of eval episodes during training
+
+# --- Environment & Simulation Parameters (Must Match Dataset) ---
+num_agents: 5             # 5% density on 10x10
+board_size: [10, 10]      # Map size
+obstacles: 10             # 10% density on 10x10
+pad: 3                    # For 9x9 FOV (from dataset name _p5)
+map_shape: [9, 9]         # FOV derived: 2*pad - 1
+sensing_range: 6          # Assumed communication range
+max_time: 120             # Max steps for env simulation
+max_steps: 120            # Max steps for eval episodes
+
+# --- Data Loading (Points to the Training Dataset) ---
+train:
+    root_dir: 'dataset/map10x10_r5_o10_p5/train'
+    mode: 'train'
+    min_time: 5             # Min trajectory length filter
+    max_time_dl: 100        # Max trajectory length filter (<= max_time)
+    nb_agents: 5            # Must match global num_agents
+valid:
+    root_dir: 'dataset/map10x10_r5_o10_p5/val'
+    mode: 'valid'
+    min_time: 5
+    max_time_dl: 100
+    nb_agents: 5

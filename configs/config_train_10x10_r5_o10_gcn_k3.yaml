@@ -1,0 +1,75 @@
+# File: configs/config_train_10x10_r5_o10_gcn_k3.yaml
+
+# Experiment Name / Output Directory (within results/)
+# !!! GIVE THIS A UNIQUE NAME FOR THIS RUN !!!
+exp_name: 'gcn_k3_10x10_r5_o10_p5_run1' # Example: descriptive name
+
+# --- Model Architecture (GNN Specific) ---
+# Keep or adjust CNN/MLP layers as needed
+channels: [16, 16, 16]
+strides: [1, 1, 1]
+encoder_layers: 1
+encoder_dims: [64]
+# GNN Specifics
+graph_filters: [3]        # K value (e.g., 3 for GCN K=3)
+node_dims: [128]
+msg_type: 'gcn'           # Ensure this is 'gcn' for standard GCN
+net_type: 'gnn'           # MUST be 'gnn'
+
+# Policy MLP (after GNN)
+action_layers: 1
+
+# --- Training Hyperparameters ---
+# Adjust based on your target (e.g., values from your LaTeX setup)
+epochs: 100               # e.g., Set to 100
+learning_rate: 1e-4       # e.g., Set to 1e-4
+weight_decay: 1e-4        # Keep or adjust
+batch_size: 32            # e.g., Set to 32
+num_workers: 0            # Start with 0 for debugging, increase later if needed (e.g., 2 or 4)
+eval_frequency: 5         # Evaluate every 5 epochs
+
+# --- Online Expert (DAgger) ---
+# Disable via command line is easier, but you can comment it out here too
+# online_expert:
+#   frequency_epochs: 4
+#   num_cases_to_run: 500 # Ignored if disabled
+#   cbs_timeout_seconds: 10 # Ignored if disabled
+
+# --- Evaluation ---
+tests_episodes: 50        # Number of eval episodes during training
+# eval_max_steps: 60      # Optional override (defaults to max_steps)
+
+# --- Environment & Simulation Parameters ---
+# !!! THESE MUST MATCH THE DATASET map10x10_r5_o10 !!!
+num_agents: 5             # From r=5% on 10x10
+board_size: [10, 10]      # From dataset name
+obstacles: 10             # From o=10% on 10x10
+pad: 5                    # Pad used during generation (check generate_all_datasets.py) -> For 9x9 FOV
+map_shape: [9, 9]         # FOV derived from pad=5 (2*5-1 = 9)
+sensing_range: 5          # Sensing range used during generation (check generate_all_datasets.py)
+max_time: 100             # Max steps for env simulation (adjust based on dataset complexity, maybe 100 for 10x10?)
+max_steps: 100            # Max steps for eval episodes (linked to max_time)
+# max_steps_train_inference: 150 # Timeout for OE (Ignored if OE disabled)
+
+# --- Data Loading ---
+# !!! POINT THESE TO YOUR GENERATED DATASET !!!
+train:
+    root_dir: 'dataset/map10x10_r5_o10/train' # <<<--- CORRECT PATH
+    mode: 'train'
+    min_time: 5             # Adjust based on observed trajectory lengths in your data
+    max_time_dl: 80         # Adjust based on observed trajectory lengths in your data (MUST be <= max_time)
+    nb_agents: 5            # MUST match global num_agents
+
+valid:
+    root_dir: 'dataset/map10x10_r5_o10/val'   # <<<--- CORRECT PATH
+    mode: 'valid'
+    min_time: 5             # Adjust
+    max_time_dl: 80         # Adjust (MUST be <= max_time)
+    nb_agents: 5            # MUST match global num_agents
+
+# test: (Optional section if you have a test split)
+#   root_dir: 'dataset/map10x10_r5_o10/test'
+#   mode: 'test'
+#   min_time: 5
+#   max_time_dl: 80
+#   nb_agents: 5

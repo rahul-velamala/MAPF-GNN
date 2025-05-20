@@ -1,0 +1,54 @@
+# File: configs/config_10x10_o10_gcn_k2.yaml
+# Training GCN K=2 on map10x10_r5_o10_p5 dataset
+
+# --- Experiment Name (Unique Identifier) ---
+exp_name: 'gcn_k2_10x10_o10_p5' # Changed K
+
+# --- Model Architecture ---
+net_type: 'gnn'
+msg_type: 'gcn'
+channels: [16, 16, 16]
+strides: [1, 1, 1]
+encoder_layers: 1
+encoder_dims: [64]
+graph_filters: [2]        # <<<--- CHANGED K value
+node_dims: [128]
+action_layers: 1
+
+# --- Training Hyperparameters ---
+epochs: 100
+learning_rate: 1e-4
+weight_decay: 1e-4
+batch_size: 32
+num_workers: 0
+eval_frequency: 5
+
+# --- Online Expert (DAgger) ---
+# Disabled via --oe_disable flag
+
+# --- Evaluation ---
+tests_episodes: 50
+
+# --- Environment & Simulation Parameters (Must Match Dataset) ---
+num_agents: 5
+board_size: [10, 10]
+obstacles: 10
+pad: 3
+map_shape: [9, 9]
+sensing_range: 6
+max_time: 120
+max_steps: 120
+
+# --- Data Loading (Points to the Training Dataset) ---
+train:
+    root_dir: 'dataset/map10x10_r5_o10_p5/train'
+    mode: 'train'
+    min_time: 5
+    max_time_dl: 100
+    nb_agents: 5
+valid:
+    root_dir: 'dataset/map10x10_r5_o10_p5/val'
+    mode: 'valid'
+    min_time: 5
+    max_time_dl: 100
+    nb_agents: 5

@@ -1,0 +1,51 @@
+exp_name: gcn_k2_10x10_o10_p5
+net_type: gnn
+msg_type: gcn
+channels:
+- 16
+- 16
+- 16
+strides:
+- 1
+- 1
+- 1
+encoder_layers: 1
+encoder_dims:
+- 64
+graph_filters:
+- 2
+node_dims:
+- 128
+action_layers: 1
+epochs: 100
+learning_rate: 1e-4
+weight_decay: 1e-4
+batch_size: 32
+num_workers: 0
+eval_frequency: 5
+tests_episodes: 50
+num_agents: 5
+board_size:
+- 10
+- 10
+obstacles: 10
+pad: 5
+map_shape:
+- 9
+- 9
+sensing_range: 5
+max_time: 120
+max_steps: 120
+train:
+  root_dir: dataset/map10x10_r5_o10_p5/train
+  mode: train
+  min_time: 5
+  max_time_dl: 100
+  nb_agents: 5
+valid:
+  root_dir: dataset/map10x10_r5_o10_p5/val
+  mode: valid
+  min_time: 5
+  max_time_dl: 100
+  nb_agents: 5
+device: cuda:0
