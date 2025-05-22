@@ -27,7 +27,6 @@ The primary goal is to develop and evaluate learning-based policies for decentra
 - **Visualization**:
   - Generates GIFs and videos of MAPF episodes.
   - Plots training curves and evaluation metrics.
-  - Manim-based animation for conceptual visualization.
   - Graphviz diagrams for model architectures.
 - **Data Management**:
   - Tools to convert external `.mat` datasets to the project's `.npy` format.
@@ -80,7 +79,6 @@ rahul-velamala-mapf-gnn/
    - **Configuration & Data Handling:** `pyyaml`, `pandas`, `openpyxl` (for `.xlsx`)
    - **Visualization & Plotting:** `matplotlib`, `seaborn`, `imageio` (and `imageio[ffmpeg]` for video), `graphviz` (Python library)
    - **Environment & Utilities:** `gymnasium`, `tqdm`
-   - **Conceptual Animation:** `manim` (if using `manim_visualization.py`)
 
    Example installation using pip:
    ```bash
@@ -93,8 +91,6 @@ rahul-velamala-mapf-gnn/
    - Linux: `sudo apt-get install graphviz` or `sudo dnf install graphviz`
    - macOS: `brew install graphviz`
    - Windows: Download from [graphviz.org](https://graphviz.org/download/) and add its `bin` directory to your system's PATH.
-
-   **For Manim:** Follow the official Manim installation guide as it requires additional setup.
 
 ## Dataset
 
